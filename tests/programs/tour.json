@@ -1,0 +1,26 @@
+{
+  "program_id": "3EKkiwNLWqoUbzFkPrmKbtUB4EweE6f4STzevYUmezeL",
+  "instruction_data": "00",
+  "accounts": [
+    {
+      "pubkey": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+      "is_writable": true,
+      "owner": "3EKkiwNLWqoUbzFkPrmKbtUB4EweE6f4STzevYUmezeL",
+      "lamports": 1000000,
+      "data": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "pubkey": "3NAM1YJMhSPvtAkmGTRABe1hYZN3aE2hZHKy3JZy9fHk",
+      "owner": "3EKkiwNLWqoUbzFkPrmKbtUB4EweE6f4STzevYUmezeL",
+      "lamports": 500000,
+      "data": "0000000000000000"
+    }
+  ],
+  "clock": {
+    "slot": 1234,
+    "epoch_start_timestamp": 1700000000,
+    "epoch": 5,
+    "leader_schedule_epoch": 6,
+    "unix_timestamp": 1700000500
+  }
+}

@@ -48,13 +48,10 @@ functions. Function keys may never equal a syscall key; the loader rejects that.
   names the destination.
 - **The log is capped at 10,000 bytes.** The first line over the cap becomes `Log truncated`.
 
-## Not done yet
+## Costs
 
-- **Compute costs.** In Agave, `sol_log_` costs at least 100 units. Costs come with the
-  compute meter in milestone 6; until then `sol_log_compute_units_` reports the
-  instructions left.
-- **Program input.** Programs that read their accounts fail for now, because the input
-  region is empty. Milestone 6 fills it.
+Each syscall costs compute units, charged before it does any work. See
+[06](06-input-and-compute.md) for the table.
 
 ## Unknown syscalls
 
@@ -67,12 +64,7 @@ camshaft: unknown syscall `log` at pc 3
 
 ## How we know it is right
 
-These follow Agave v3.0.8's source (`syscalls/src`), the version `cargo build-sbf` 3.0.8
-targets. Anza's `sbpf` VM has none of Agave's syscalls, so there is no oracle to compare
-against yet. Instead:
-
-- `tests/syscalls.rs` tests each syscall and each error case against Agave's code: bad UTF-8,
-  unmapped pointers, zero lengths, overlap, alignment, heap exhaustion.
-- `tests/programs/hello.so` is a real program, built from `tests/programs/hello/`.
-- Comparing against a real Agave runtime (like litesvm or mollusk) comes later, along
-  with compute units.
+These follow Agave 4.4.1, the runtime on most of mainnet. `tests/runtime.rs` runs real
+programs through camshaft and through Agave itself (via mollusk) and compares every log
+line, result and compute unit count. `tests/syscalls.rs` adds small hand-built programs for
+each error case, and `tests/programs/hello.so` is a real hello-world.

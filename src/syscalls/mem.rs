@@ -1,10 +1,16 @@
 //! memcpy, memmove, memset, memcmp. Reference: Agave `syscalls/src/mem_ops.rs`.
 
-use super::{read, write};
+use super::{CPI_BYTES_PER_UNIT, MEM_OP_BASE_COST, read, write};
 use crate::error::SyscallError;
 use crate::interp::Vm;
 
+/// Every memory syscall costs 10 units, or 1 per 250 bytes if that is more.
+fn charge(vm: &mut Vm, n: u64) -> Result<(), SyscallError> {
+    vm.ctx.consume(MEM_OP_BASE_COST.max(n / CPI_BYTES_PER_UNIT))
+}
+
 pub(super) fn memcpy(vm: &mut Vm, [dst, src, n, ..]: [u64; 5]) -> Result<u64, SyscallError> {
+    charge(vm, n)?;
     if !non_overlapping(src, n, dst, n) {
         return Err(SyscallError::CopyOverlapping);
     }
@@ -12,17 +18,20 @@ pub(super) fn memcpy(vm: &mut Vm, [dst, src, n, ..]: [u64; 5]) -> Result<u64, Sy
 }
 
 pub(super) fn memmove(vm: &mut Vm, [dst, src, n, ..]: [u64; 5]) -> Result<u64, SyscallError> {
+    charge(vm, n)?;
     copy(vm, dst, src, n)
 }
 
 pub(super) fn memset(vm: &mut Vm, [dst, c, n, ..]: [u64; 5]) -> Result<u64, SyscallError> {
-    write(vm, dst, n)?.fill(c as u8);
+    charge(vm, n)?;
+    write(&mut vm.memory, dst, n)?.fill(c as u8);
     Ok(0)
 }
 
 /// Writes `a - b` for the first differing bytes, or 0, as an `i32` at `result`.
 pub(super) fn memcmp(vm: &mut Vm, [a, b, n, result, _]: [u64; 5]) -> Result<u64, SyscallError> {
-    let (a, b) = (read(vm, a, n)?, read(vm, b, n)?);
+    charge(vm, n)?;
+    let (a, b) = (read(&vm.memory, a, n)?, read(&vm.memory, b, n)?);
     let diff = a
         .iter()
         .zip(b)
@@ -39,9 +48,9 @@ pub(super) fn memcmp(vm: &mut Vm, [a, b, n, result, _]: [u64; 5]) -> Result<u64,
 
 /// Copies even if the ranges overlap. The destination is checked before the source.
 fn copy(vm: &mut Vm, dst: u64, src: u64, n: u64) -> Result<u64, SyscallError> {
-    write(vm, dst, n)?;
-    let data = read(vm, src, n)?.to_vec();
-    write(vm, dst, n)?.copy_from_slice(&data);
+    write(&mut vm.memory, dst, n)?;
+    let data = read(&vm.memory, src, n)?.to_vec();
+    write(&mut vm.memory, dst, n)?.copy_from_slice(&data);
     Ok(0)
 }
 

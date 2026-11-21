@@ -11,16 +11,19 @@ that `cargo build-sbf` produces, and shows what happens at each step.
 - [x] Milestone 3: verifier
 - [x] Milestone 4: ELF loader and function calls
 - [x] Milestone 5: syscalls (logging, memory, allocation)
-- [ ] Milestone 6: program input and compute units
+- [x] Milestone 6: program input, compute units, more syscalls
+- [ ] Milestone 7: differential testing at scale
 
 ## Usage
 
 ```
-cargo run -- run program.so        # run a program and print its logs
-cargo run -- disasm program.bin    # print raw bytecode as assembly
+cargo run -- run program.so --input fixture.json   # run one instruction
+cargo run -- run program.so                          # run with no accounts
+cargo run -- disasm program.bin                      # print raw bytecode as assembly
 ```
 
-`run` takes a v0 ELF built by `cargo build-sbf`. `disasm` takes raw bytecode for now.
+`run` takes a v0 ELF built by `cargo build-sbf` and an optional JSON fixture
+(see [docs/06](docs/06-input-and-compute.md)). `disasm` takes raw bytecode for now.
 
 ## Docs
 
@@ -30,3 +33,4 @@ cargo run -- disasm program.bin    # print raw bytecode as assembly
 - [03: Verifier](docs/03-verifier.md)
 - [04: ELF loading and function calls](docs/04-elf-and-calls.md)
 - [05: Syscalls](docs/05-syscalls.md)
+- [06: Program input and compute units](docs/06-input-and-compute.md)

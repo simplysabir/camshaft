@@ -60,7 +60,7 @@ fn code_only(code: &[Slot]) -> Executable {
 fn run(exe: &Executable) -> (Result<u64, VmError>, Vec<String>, usize) {
     let mut vm = Vm::new(exe);
     let result = vm.run(1000);
-    (result, vm.logs.lines, vm.pc)
+    (result, vm.ctx.logs.lines, vm.pc)
 }
 
 fn syscall_error(e: SyscallError) -> Result<u64, VmError> {
@@ -86,7 +86,7 @@ fn cli_runs_hello_and_names_unknown_syscalls() {
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(
-        stdout.starts_with("Program log: Hello, world!\n"),
+        stdout.contains("\nProgram log: Hello, world!\n"),
         "{stdout}"
     );
 
@@ -167,9 +167,9 @@ fn sol_log_64_pubkey_and_compute_units() {
         ["Program log: 11111111111111111111111111111111"]
     );
 
-    // The limit is 1000 and the call is the first instruction.
+    // Budget 1000, minus 1 for the call instruction, minus 100 the syscall charges first.
     let units = code_only(&[call("sol_log_compute_units_"), EXIT]);
-    assert_eq!(run(&units).1, ["Program consumption: 999 units remaining"]);
+    assert_eq!(run(&units).1, ["Program consumption: 899 units remaining"]);
 }
 
 #[test]
@@ -302,7 +302,7 @@ fn alloc_free_bumps_through_the_heap() {
     let mut vm = Vm::new(&exe);
     // The second allocation starts at the next 8-byte boundary.
     assert_eq!(vm.run(1000), Ok(HEAP_START + 8));
-    assert_eq!(vm.heap_used, 11);
+    assert_eq!(vm.ctx.heap_used, 11);
 
     // Too big returns 0, and so does a free.
     assert_eq!(

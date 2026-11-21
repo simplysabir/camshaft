@@ -1,12 +1,13 @@
 //! Runs v0 bytecode.
 
+use crate::context::Context;
 use crate::error::VmError;
 use crate::executable::Executable;
 use crate::insn::{
     AluOp, ByteOrder, INSN_SIZE, Insn, JmpCond, Source, Width, decode_at, jump_target, split_slots,
 };
 use crate::memory::{INPUT_START, MAX_CALL_DEPTH, Memory, STACK_FRAME_SIZE, STACK_START};
-use crate::syscalls::{self, Logs};
+use crate::syscalls;
 
 /// What a call saves so the matching `exit` can return to the caller.
 struct Frame {
@@ -24,11 +25,8 @@ pub struct Vm<'a> {
     /// Instructions started so far, including one that failed.
     pub insn_count: u64,
     pub memory: Memory<'a>,
-    /// What the program logged.
-    pub logs: Logs,
-    /// Bytes of the heap handed out by `sol_alloc_free_`.
-    pub heap_used: u64,
-    max_insns: u64,
+    /// Program id, sysvars, logs, heap, return data and the compute meter.
+    pub ctx: Context,
     exe: &'a Executable,
     frames: Vec<Frame>,
 }
@@ -44,24 +42,23 @@ impl<'a> Vm<'a> {
             pc: exe.entry_pc,
             insn_count: 0,
             memory: Memory::new(&exe.ro, exe.ro_addr),
-            logs: Logs::default(),
-            heap_used: 0,
-            max_insns: 0,
+            ctx: Context::default(),
             exe,
             frames: Vec::new(),
         }
     }
 
-    /// Runs until `exit` and returns r0.
+    /// Runs with `budget` compute units until `exit`, and returns r0.
     ///
     /// The program must pass the verifier (M3); a register above r10 panics.
-    pub fn run(&mut self, max_insns: u64) -> Result<u64, VmError> {
-        self.max_insns = max_insns;
+    pub fn run(&mut self, budget: u64) -> Result<u64, VmError> {
+        self.ctx.remaining = budget;
         let slots = split_slots(self.exe.text_bytes())?;
         loop {
-            if self.insn_count >= max_insns {
+            if self.ctx.remaining == 0 {
                 return Err(VmError::ExceededMaxInstructions);
             }
+            self.ctx.remaining -= 1;
             self.insn_count += 1;
             if self.pc >= slots.len() {
                 return Err(VmError::ExecutionOverrun);
@@ -160,11 +157,6 @@ impl<'a> Vm<'a> {
         }
         self.pc = next;
         Ok(None)
-    }
-
-    /// Instructions left before the limit. Syscall costs are added in milestone 6.
-    pub fn remaining(&self) -> u64 {
-        self.max_insns.saturating_sub(self.insn_count)
     }
 
     /// Saves the caller's state and moves r10 to the next stack frame.

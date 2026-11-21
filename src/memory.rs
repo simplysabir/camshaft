@@ -78,6 +78,15 @@ impl<'a> Memory<'a> {
         }
     }
 
+    /// True if two accesses touch the same underlying bytes. Agave compares host addresses,
+    /// so two accesses in different stack frames can overlap through the gap rule.
+    pub fn overlaps(&self, (a, a_len): (u64, usize), (b, b_len): (u64, usize)) -> bool {
+        match (self.locate(a, a_len), self.locate(b, b_len)) {
+            (Some((ra, a)), Some((rb, b))) => ra == rb && a.start < b.end && b.start < a.end,
+            _ => false,
+        }
+    }
+
     /// Finds the region and byte range for an access, or `None` if any byte is unmapped.
     fn locate(&self, addr: u64, len: usize) -> Option<(Region, Range<usize>)> {
         let (region, mut offset) = self.offset_in(addr)?;

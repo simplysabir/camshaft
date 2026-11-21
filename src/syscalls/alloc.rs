@@ -22,11 +22,11 @@ pub(super) fn alloc_free(
     if free_addr != 0 {
         return Ok(0);
     }
-    let start = vm.heap_used.next_multiple_of(ALIGN as u64);
+    let start = vm.ctx.heap_used.next_multiple_of(ALIGN as u64);
     let end = start.saturating_add(layout.size() as u64);
     if end > vm.memory.heap.len() as u64 {
         return Ok(0);
     }
-    vm.heap_used = end;
+    vm.ctx.heap_used = end;
     Ok(HEAP_START + start)
 }
