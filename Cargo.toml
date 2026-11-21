@@ -8,4 +8,4 @@ clap = { version = "4.6.9", features = ["derive"] }
 thiserror = "2.0.21"
 
 [dev-dependencies]
-solana-sbpf = "0.28.0"
+solana-sbpf = { version = "0.28.0", features = ["dev-context-only-utils"] }
