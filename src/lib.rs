@@ -2,3 +2,4 @@
 
 pub mod disasm;
 pub mod insn;
+pub mod interp;

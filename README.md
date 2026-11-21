@@ -6,7 +6,8 @@ that `cargo build-sbf` produces, and shows what happens at each step.
 ## Status
 
 - [x] Milestone 0: decode and disassemble bytecode
-- [ ] Milestone 1: run instructions
+- [x] Milestone 1: run register-only programs
+- [ ] Milestone 2: memory
 
 ## Usage
 
@@ -19,3 +20,4 @@ cargo run -- disasm program.bin
 ## Docs
 
 - [00: Instructions](docs/00-instructions.md)
+- [01: Interpreter](docs/01-interpreter.md)

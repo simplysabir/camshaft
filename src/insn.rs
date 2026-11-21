@@ -169,10 +169,7 @@ impl Insn {
 
 /// Decodes a program into `(pc, insn)` pairs. pc counts slots, not instructions.
 pub fn decode_program(program: &[u8]) -> Result<Vec<(usize, Insn)>, DecodeError> {
-    let (slots, rest) = program.as_chunks::<INSN_SIZE>();
-    if !rest.is_empty() {
-        return Err(DecodeError::PartialSlot { len: program.len() });
-    }
+    let slots = split_slots(program)?;
     let mut insns = Vec::with_capacity(slots.len());
     let mut pc = 0;
     while pc < slots.len() {
@@ -181,6 +178,14 @@ pub fn decode_program(program: &[u8]) -> Result<Vec<(usize, Insn)>, DecodeError>
         pc += insn.slots();
     }
     Ok(insns)
+}
+
+/// Splits a program into 8-byte slots.
+pub fn split_slots(program: &[u8]) -> Result<&[[u8; INSN_SIZE]], DecodeError> {
+    match program.as_chunks::<INSN_SIZE>() {
+        (slots, []) => Ok(slots),
+        _ => Err(DecodeError::PartialSlot { len: program.len() }),
+    }
 }
 
 /// Decodes the instruction at slot `pc`. Panics if `pc` is out of bounds.
