@@ -1,7 +1,9 @@
 //! Runs v0 bytecode. Calls come in M4.
 
 use crate::error::VmError;
-use crate::insn::{AluOp, ByteOrder, Insn, JmpCond, Source, Width, decode_at, split_slots};
+use crate::insn::{
+    AluOp, ByteOrder, Insn, JmpCond, Source, Width, decode_at, jump_target, split_slots,
+};
 use crate::memory::{INPUT_START, Memory, STACK_FRAME_SIZE, STACK_START};
 
 pub struct Vm<'a> {
@@ -76,7 +78,7 @@ impl<'a> Vm<'a> {
                 let r = &mut self.reg[dst as usize];
                 *r = byte_swap(order, bits, *r).ok_or(VmError::InvalidInstruction)?;
             }
-            Insn::Ja { off } => next = jump(self.pc, off),
+            Insn::Ja { off } => next = jump_target(self.pc, off),
             Insn::Jump {
                 cond,
                 dst,
@@ -84,7 +86,7 @@ impl<'a> Vm<'a> {
                 off,
             } => {
                 if condition(cond, self.reg[dst as usize], self.operand(source)) {
-                    next = jump(self.pc, off);
+                    next = jump_target(self.pc, off);
                 }
             }
             Insn::Load {
@@ -121,11 +123,6 @@ impl<'a> Vm<'a> {
             Source::Reg(src) => self.reg[src as usize],
         }
     }
-}
-
-/// `pc + 1 + off`. A negative result wraps and then fails as an overrun.
-fn jump(pc: usize, off: i16) -> usize {
-    (pc + 1).wrapping_add_signed(isize::from(off))
 }
 
 /// `None` means division by zero.

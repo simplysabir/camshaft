@@ -147,16 +147,16 @@ pub enum DecodeError {
 }
 
 /// One slot split into its fields.
-struct RawInsn {
-    opc: u8,
-    dst: u8,
-    src: u8,
-    off: i16,
-    imm: i32,
+pub(crate) struct RawInsn {
+    pub(crate) opc: u8,
+    pub(crate) dst: u8,
+    pub(crate) src: u8,
+    pub(crate) off: i16,
+    pub(crate) imm: i32,
 }
 
 impl RawInsn {
-    fn from_bytes(b: &[u8; INSN_SIZE]) -> Self {
+    pub(crate) fn from_bytes(b: &[u8; INSN_SIZE]) -> Self {
         Self {
             opc: b[0],
             dst: b[1] & 0x0f,
@@ -189,6 +189,12 @@ pub fn decode_program(program: &[u8]) -> Result<Vec<(usize, Insn)>, DecodeError>
         pc += insn.slots();
     }
     Ok(insns)
+}
+
+/// Where a jump at `pc` lands: `pc + 1 + off`. A negative result wraps to a huge pc,
+/// which every caller treats as out of range.
+pub fn jump_target(pc: usize, off: i16) -> usize {
+    (pc + 1).wrapping_add_signed(isize::from(off))
 }
 
 /// Splits a program into 8-byte slots.

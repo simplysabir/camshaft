@@ -1,7 +1,7 @@
 //! Prints instructions as text, matching the reference `disassembler.rs`.
 
 use crate::insn::{
-    AluOp, ByteOrder, DecodeError, Insn, JmpCond, Size, Source, Width, decode_program,
+    self, AluOp, ByteOrder, DecodeError, Insn, JmpCond, Size, Source, Width, decode_program,
 };
 use std::collections::BTreeMap;
 
@@ -11,7 +11,7 @@ pub fn disassemble(program: &[u8]) -> Result<String, DecodeError> {
     // pc 0 plus every jump target that lands on an instruction.
     let labels: BTreeMap<usize, String> = insns
         .iter()
-        .filter_map(|(pc, insn)| jump_target(insn, *pc))
+        .filter_map(|(pc, insn)| target_of(insn, *pc))
         .chain([0])
         .filter(|target| insns.binary_search_by_key(target, |&(pc, _)| pc).is_ok())
         .map(|pc| (pc, block_label(pc)))
@@ -31,7 +31,7 @@ pub fn disassemble(program: &[u8]) -> Result<String, DecodeError> {
 /// Formats one instruction. `label_of` names jump targets; `None` prints `[invalid]`.
 pub fn format_insn(insn: &Insn, pc: usize, label_of: impl Fn(usize) -> Option<String>) -> String {
     let target = || {
-        jump_target(insn, pc)
+        target_of(insn, pc)
             .and_then(&label_of)
             .unwrap_or_else(|| "[invalid]".into())
     };
@@ -106,12 +106,11 @@ pub fn format_insn(insn: &Insn, pc: usize, label_of: impl Fn(usize) -> Option<St
     }
 }
 
-/// Where a jump lands: `pc + off + 1`.
-fn jump_target(insn: &Insn, pc: usize) -> Option<usize> {
+fn target_of(insn: &Insn, pc: usize) -> Option<usize> {
     let (Insn::Ja { off } | Insn::Jump { off, .. }) = *insn else {
         return None;
     };
-    pc.checked_add_signed(isize::from(off) + 1)
+    Some(insn::jump_target(pc, off))
 }
 
 fn block_label(pc: usize) -> String {
