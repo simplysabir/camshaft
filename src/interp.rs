@@ -1,60 +1,38 @@
-//! Runs v0 bytecode. Registers only for now: memory comes in M2, calls in M4.
+//! Runs v0 bytecode. Calls come in M4.
 
-use crate::insn::{
-    AluOp, ByteOrder, DecodeError, Insn, JmpCond, Source, Width, decode_at, split_slots,
-};
-use thiserror::Error;
+use crate::error::VmError;
+use crate::insn::{AluOp, ByteOrder, Insn, JmpCond, Source, Width, decode_at, split_slots};
+use crate::memory::{INPUT_START, Memory, STACK_FRAME_SIZE, STACK_START};
 
-/// r1 starts here: the input region.
-pub const INPUT_START: u64 = 0x4_0000_0000;
-/// r10 starts here: the top of the first 4 KiB stack frame.
-pub const FRAME_POINTER_START: u64 = 0x2_0000_0000 + 4096;
-
-/// Names match the reference `EbpfError`.
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum VmError {
-    #[error("division by zero")]
-    DivideByZero,
-    #[error("pc ran past the end of the program")]
-    ExecutionOverrun,
-    #[error("instruction limit reached")]
-    ExceededMaxInstructions,
-    #[error("invalid instruction")]
-    InvalidInstruction,
-    #[error("unsupported instruction")]
-    UnsupportedInstruction,
-    #[error(transparent)]
-    Decode(#[from] DecodeError),
-}
-
-pub struct Vm {
+pub struct Vm<'a> {
     /// r0 to r10.
     pub reg: [u64; 11],
     /// Slot index of the current instruction.
     pub pc: usize,
     /// Instructions started so far, including one that failed.
     pub insn_count: u64,
+    pub memory: Memory<'a>,
 }
 
-impl Default for Vm {
-    fn default() -> Self {
+impl<'a> Vm<'a> {
+    /// r1 points at the input and r10 at the top of the first stack frame.
+    pub fn new(program: &'a [u8]) -> Self {
         let mut reg = [0; 11];
         reg[1] = INPUT_START;
-        reg[10] = FRAME_POINTER_START;
+        reg[10] = STACK_START + STACK_FRAME_SIZE;
         Self {
             reg,
             pc: 0,
             insn_count: 0,
+            memory: Memory::new(program),
         }
     }
-}
 
-impl Vm {
     /// Runs until `exit` and returns r0.
     ///
     /// The program must pass the verifier (M3); a register above r10 panics.
-    pub fn run(&mut self, program: &[u8], max_insns: u64) -> Result<u64, VmError> {
-        let slots = split_slots(program)?;
+    pub fn run(&mut self, max_insns: u64) -> Result<u64, VmError> {
+        let slots = split_slots(self.memory.program)?;
         loop {
             if self.insn_count >= max_insns {
                 return Err(VmError::ExceededMaxInstructions);
@@ -109,12 +87,28 @@ impl Vm {
                     next = jump(self.pc, off);
                 }
             }
+            Insn::Load {
+                size,
+                dst,
+                src,
+                off,
+            } => {
+                let addr = self.reg[src as usize].wrapping_add_signed(off.into());
+                self.reg[dst as usize] = self.memory.load(addr, size)?;
+            }
+            Insn::Store {
+                size,
+                dst,
+                off,
+                value,
+            } => {
+                let addr = self.reg[dst as usize].wrapping_add_signed(off.into());
+                self.memory.store(addr, size, self.operand(value))?;
+            }
             Insn::Exit => return Ok(Some(self.reg[0])),
-            Insn::Load { .. }
-            | Insn::Store { .. }
-            | Insn::Call { .. }
-            | Insn::Callx { .. }
-            | Insn::Unknown { .. } => return Err(VmError::UnsupportedInstruction),
+            Insn::Call { .. } | Insn::Callx { .. } | Insn::Unknown { .. } => {
+                return Err(VmError::UnsupportedInstruction);
+            }
         }
         self.pc = next;
         Ok(None)
@@ -212,7 +206,7 @@ mod tests {
     }
 
     fn run(slots: &[[u8; 8]]) -> Result<u64, VmError> {
-        Vm::default().run(slots.as_flattened(), 100)
+        Vm::new(slots.as_flattened()).run(100)
     }
 
     const EXIT: [u8; 8] = [0x95, 0, 0, 0, 0, 0, 0, 0];
@@ -255,9 +249,9 @@ mod tests {
 
     #[test]
     fn exit_returns_r0_and_counts_instructions() {
-        let mut vm = Vm::default();
         let program = [slot(0xb7, 0, 0, 42), EXIT];
-        assert_eq!(vm.run(program.as_flattened(), 100), Ok(42));
+        let mut vm = Vm::new(program.as_flattened());
+        assert_eq!(vm.run(100), Ok(42));
         assert_eq!((vm.pc, vm.insn_count), (1, 2));
     }
 }

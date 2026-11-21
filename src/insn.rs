@@ -84,6 +84,17 @@ pub enum Size {
     DW,
 }
 
+impl Size {
+    pub fn bytes(self) -> usize {
+        match self {
+            Size::B => 1,
+            Size::H => 2,
+            Size::W => 4,
+            Size::DW => 8,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Width {
     W32,

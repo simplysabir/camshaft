@@ -1,14 +1,18 @@
 //! Runs programs on both camshaft and `solana-sbpf` and checks they end in the same state.
 
-use camshaft::interp::{Vm, VmError};
+use camshaft::error::VmError;
+use camshaft::interp::Vm;
+use camshaft::memory::HEAP_SIZE;
 use solana_sbpf::{
+    aligned_memory::AlignedMemory,
     assembler::assemble,
-    create_vm,
+    ebpf::{HOST_ALIGN, MM_INPUT_START},
     elf::Executable,
     interpreter::Interpreter,
+    memory_region::MemoryRegion,
     program::{BuiltinProgram, FunctionRegistry, SBPFVersion},
-    test_utils::TestContextObject,
-    vm::{CallFrame, Config},
+    test_utils::{TestContextObject, create_memory_mapping},
+    vm::{CallFrame, Config, ContextObject, EbpfVm},
 };
 use std::sync::Arc;
 
@@ -29,6 +33,11 @@ fn asm(src: &str) -> Vec<u8> {
 
 /// Runs `program` on both VMs, asserts they agree, and returns camshaft's result.
 fn check(program: &[u8], limit: u64) -> Result<u64, VmError> {
+    check_with_input(program, &[], limit)
+}
+
+/// Same as `check`, with `input` mapped writable at the input region.
+fn check_with_input(program: &[u8], input: &[u8], limit: u64) -> Result<u64, VmError> {
     let executable = Executable::from_text_bytes(
         program,
         loader(),
@@ -36,17 +45,33 @@ fn check(program: &[u8], limit: u64) -> Result<u64, VmError> {
         FunctionRegistry::default(),
     )
     .unwrap();
+    let mut stack = AlignedMemory::<HOST_ALIGN>::zero_filled(executable.get_config().stack_size());
+    let mut heap = AlignedMemory::<HOST_ALIGN>::zero_filled(HEAP_SIZE);
+    let mut expected_input = input.to_vec();
+    let input_region = MemoryRegion::new(&raw mut *expected_input.as_mut_slice(), MM_INPUT_START);
     let mut context = TestContextObject::new(limit);
-    create_vm!(vm, &executable, &mut context, stack, heap, vec![], None);
+    context.memory_mapping =
+        create_memory_mapping(&executable, &mut stack, &mut heap, vec![input_region], None)
+            .unwrap();
+    let mut vm = EbpfVm::new(
+        executable.get_loader().clone(),
+        SBPFVersion::V0,
+        &mut context,
+        stack.len(),
+    );
+    vm.registers[1] = MM_INPUT_START;
     vm.previous_instruction_meter = limit;
     let mut frames = vec![CallFrame::default(); executable.get_config().max_call_depth];
     let registers = vm.registers;
     let mut interpreter = Interpreter::new(&mut vm, &executable, registers, &mut frames);
     while interpreter.step() {}
     let expected_reg = interpreter.reg;
+    // Memory errors move the pending count into the context, so add both.
+    let expected_count = limit - vm.context().get_remaining() + vm.due_insn_count;
 
-    let mut ours = Vm::default();
-    let result = ours.run(program, limit);
+    let mut ours = Vm::new(program);
+    ours.memory.input = input.to_vec();
+    let result = ours.run(limit);
     let context = format!("program {program:02x?}");
     assert_eq!(
         format!("{result:?}"),
@@ -55,7 +80,19 @@ fn check(program: &[u8], limit: u64) -> Result<u64, VmError> {
     );
     assert_eq!(ours.reg, expected_reg[..11], "{context}");
     assert_eq!(ours.pc as u64, expected_reg[11], "{context}");
-    assert_eq!(ours.insn_count, vm.due_insn_count, "{context}");
+    assert_eq!(ours.insn_count, expected_count, "{context}");
+    assert!(
+        ours.memory.stack == stack.as_slice(),
+        "stack differs: {context}"
+    );
+    assert!(
+        ours.memory.heap == heap.as_slice(),
+        "heap differs: {context}"
+    );
+    assert!(
+        ours.memory.input == expected_input,
+        "input differs: {context}"
+    );
     result
 }
 
@@ -172,10 +209,7 @@ fn control_flow_matches_reference() {
     );
     // A negative target overflows the reference's pc check in debug builds, so check ours alone.
     let back = asm("ja -2\nexit");
-    assert_eq!(
-        Vm::default().run(&back, LIMIT),
-        Err(VmError::ExecutionOverrun)
-    );
+    assert_eq!(Vm::new(&back).run(LIMIT), Err(VmError::ExecutionOverrun));
     assert_eq!(
         check(&asm("ja -1"), LIMIT),
         Err(VmError::ExceededMaxInstructions)
@@ -189,4 +223,88 @@ fn control_flow_matches_reference() {
     // call to an unregistered hash
     let call = [0x85, 0, 0, 0, 99, 0, 0, 0, 0x95, 0, 0, 0, 0, 0, 0, 0];
     assert_eq!(check(&call, LIMIT), Err(VmError::UnsupportedInstruction));
+}
+
+const STACK: u64 = 0x2_0000_0000;
+const HEAP: u64 = 0x3_0000_0000;
+const INPUT: u64 = 0x4_0000_0000;
+const WIDTHS: [&str; 4] = ["b", "h", "w", "dw"];
+
+fn input_bytes() -> Vec<u8> {
+    (1..=64).collect()
+}
+
+#[test]
+fn loads_and_stores_match_reference() {
+    // An address inside each writable region.
+    for base in [STACK + 0x800, HEAP + 0x10, INPUT + 8] {
+        for store in WIDTHS {
+            for load in WIDTHS {
+                for value in VALUES {
+                    let src = format!(
+                        "lddw r2, {base}\nlddw r3, {}\nstx{store} [r2+8], r3\nldx{load} r0, [r2+8]\nexit",
+                        value as i64
+                    );
+                    check_with_input(&asm(&src), &input_bytes(), LIMIT).unwrap();
+                }
+                for imm in IMMS {
+                    let src = format!(
+                        "lddw r2, {base}\nst{store} [r2-4], {imm}\nldx{load} r0, [r2-4]\nexit"
+                    );
+                    check_with_input(&asm(&src), &input_bytes(), LIMIT).unwrap();
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn access_violations_match_reference() {
+    let program = 0x1_0000_0000u64;
+    let heap_end = HEAP + camshaft::memory::HEAP_SIZE as u64;
+    let accesses = [
+        format!("lddw r2, {program}\nldxdw r0, [r2+0]"), // reading the program is fine
+        format!("lddw r2, {program}\nstb [r2+0], 1"),    // writing it is not
+        format!("lddw r2, {heap_end}\nldxdw r0, [r2-4]"), // runs off the heap
+        format!("lddw r2, {heap_end}\nldxb r0, [r2+0]"),
+        "ldxb r0, [r10+0]".into(),  // first stack gap
+        "ldxdw r0, [r10-4]".into(), // only the start is checked, so this reads into frame 1
+        "stw [r10+4096], 7".into(), // frame 1
+        format!("lddw r2, {}\nldxb r0, [r2+0]", STACK + 127 * 4096), // last gap
+        format!("lddw r2, {}\nldxb r0, [r2+0]", STACK + 128 * 4096), // past the stack
+        format!("lddw r2, {STACK}\nldxb r0, [r2-1]"), // just below the stack
+        format!("lddw r2, {STACK}\nldxb r0, [r2-8193]"),
+        "ldxdw r0, [r1+60]".into(), // runs off the input
+        "lddw r2, 0\nldxb r0, [r2+0]".into(),
+        "lddw r2, 0\nldxb r0, [r2-1]".into(), // wraps to u64::MAX
+        "lddw r2, 0x500000000\nstb [r2+0], 1".into(),
+    ];
+    for access in accesses {
+        check_with_input(&asm(&format!("{access}\nexit")), &input_bytes(), LIMIT).ok();
+    }
+    // With no input, the input region is empty.
+    check(&asm("ldxb r0, [r1+0]\nexit"), LIMIT).unwrap_err();
+}
+
+#[test]
+fn violation_errors_name_the_place() {
+    use camshaft::error::AccessType::{Load, Store};
+    let store_program = asm("lddw r2, 0x100000000\nstb [r2+0], 1\nexit");
+    assert_eq!(
+        check(&store_program, LIMIT),
+        Err(VmError::AccessViolation(Store, 0x1_0000_0000, 1, "program"))
+    );
+    assert_eq!(
+        check(&asm("ldxb r0, [r10+0]\nexit"), LIMIT),
+        Err(VmError::StackAccessViolation(Load, STACK + 4096, 1, 1))
+    );
+    let mut vm = Vm::new(&store_program);
+    vm.run(LIMIT).unwrap_err();
+    assert_eq!(vm.pc, 2, "pc points at the faulting store");
+}
+
+#[test]
+fn sums_input_bytes() {
+    let sum = "mov64 r0, 0\nmov64 r2, 0\nldxb r3, [r1+0]\nadd64 r0, r3\nadd64 r1, 1\nadd64 r2, 1\njlt r2, 8, -5\nexit";
+    assert_eq!(check_with_input(&asm(sum), &input_bytes(), LIMIT), Ok(36));
 }
