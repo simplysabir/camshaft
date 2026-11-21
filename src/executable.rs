@@ -16,6 +16,8 @@ pub struct Executable {
     pub entry_pc: usize,
     /// `call imm` key to the pc it jumps to.
     pub functions: BTreeMap<u32, usize>,
+    /// Names of the syscalls the program calls, by key. Used to name a missing syscall.
+    pub syscall_names: BTreeMap<u32, String>,
 }
 
 impl Executable {
@@ -29,6 +31,7 @@ impl Executable {
             text: 0..text.len(),
             entry_pc,
             functions,
+            syscall_names: BTreeMap::new(),
         }
     }
 
@@ -56,22 +59,29 @@ pub fn function_key(pc: usize) -> u32 {
 }
 
 /// 32-bit murmur3 with seed 0. v0 names syscalls and functions by this hash.
-pub fn hash_symbol_name(name: &[u8]) -> u32 {
-    let mix = |k: u32| {
+/// `const` so syscall keys are computed at compile time.
+pub const fn hash_symbol_name(name: &[u8]) -> u32 {
+    const fn mix(k: u32) -> u32 {
         k.wrapping_mul(0xcc9e_2d51)
             .rotate_left(15)
             .wrapping_mul(0x1b87_3593)
-    };
+    }
     let (blocks, tail) = name.as_chunks::<4>();
     let mut h = 0u32;
-    for block in blocks {
-        h ^= mix(u32::from_le_bytes(*block));
+    let mut i = 0;
+    while i < blocks.len() {
+        h ^= mix(u32::from_le_bytes(blocks[i]));
         h = h.rotate_left(13).wrapping_mul(5).wrapping_add(0xe654_6b64);
+        i += 1;
     }
     if !tail.is_empty() {
-        let mut last = [0; 4];
-        last[..tail.len()].copy_from_slice(tail);
-        h ^= mix(u32::from_le_bytes(last));
+        let mut last = 0u32;
+        let mut j = 0;
+        while j < tail.len() {
+            last |= (tail[j] as u32) << (8 * j);
+            j += 1;
+        }
+        h ^= mix(last);
     }
     h ^= name.len() as u32;
     h ^= h >> 16;

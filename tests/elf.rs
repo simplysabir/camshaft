@@ -79,8 +79,11 @@ fn load_both(bytes: &[u8], what: &str) -> Option<(Reference, Ours)> {
 fn fixtures_load_and_run_like_the_reference() {
     let input: Vec<u8> = (1..=64).collect();
     for (name, bytes) in fixtures() {
-        // Programs that call syscalls stop with UnsupportedInstruction on both sides for now.
-        if let Some((reference, ours)) = load_both(&bytes, &name) {
+        // The reference VM has none of Agave's syscalls, so programs that call them are only
+        // compared on loading. tests/syscalls.rs runs those.
+        if let Some((reference, ours)) = load_both(&bytes, &name)
+            && ours.syscall_names.is_empty()
+        {
             run_both(&reference, &ours, &input, 10_000_000).ok();
         }
     }

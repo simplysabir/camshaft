@@ -47,25 +47,35 @@ impl<'a> Memory<'a> {
     /// Reads a little-endian number of the given size.
     pub fn load(&self, addr: u64, size: Size) -> Result<u64, VmError> {
         let len = size.bytes();
-        let (region, range) = self
-            .locate(addr, len)
-            .ok_or_else(|| self.violation(AccessType::Load, addr, len))?;
         let mut bytes = [0; 8];
-        bytes[..len].copy_from_slice(&self.bytes(region)[range]);
+        bytes[..len].copy_from_slice(self.slice(addr, len)?);
         Ok(u64::from_le_bytes(bytes))
     }
 
     /// Writes the low bytes of `value`, little-endian.
     pub fn store(&mut self, addr: u64, size: Size, value: u64) -> Result<(), VmError> {
         let len = size.bytes();
-        let target = self
-            .locate(addr, len)
-            .and_then(|(region, range)| Some(&mut self.bytes_mut(region)?[range]));
-        let Some(target) = target else {
-            return Err(self.violation(AccessType::Store, addr, len));
-        };
-        target.copy_from_slice(&value.to_le_bytes()[..len]);
+        self.slice_mut(addr, len)?
+            .copy_from_slice(&value.to_le_bytes()[..len]);
         Ok(())
+    }
+
+    /// `len` bytes at `addr`, for reading.
+    pub fn slice(&self, addr: u64, len: usize) -> Result<&[u8], VmError> {
+        let (region, range) = self
+            .locate(addr, len)
+            .ok_or_else(|| self.violation(AccessType::Load, addr, len))?;
+        Ok(&self.bytes(region)[range])
+    }
+
+    /// `len` bytes at `addr`, for writing. Fails for the read-only program region.
+    pub fn slice_mut(&mut self, addr: u64, len: usize) -> Result<&mut [u8], VmError> {
+        match self.locate(addr, len) {
+            Some((region, range)) if region != Region::Program => {
+                Ok(&mut self.bytes_mut(region)[range])
+            }
+            _ => Err(self.violation(AccessType::Store, addr, len)),
+        }
     }
 
     /// Finds the region and byte range for an access, or `None` if any byte is unmapped.
@@ -122,13 +132,12 @@ impl<'a> Memory<'a> {
         }
     }
 
-    /// `None` for the read-only program region.
-    fn bytes_mut(&mut self, region: Region) -> Option<&mut [u8]> {
+    fn bytes_mut(&mut self, region: Region) -> &mut [u8] {
         match region {
-            Region::Program => None,
-            Region::Stack => Some(&mut self.stack),
-            Region::Heap => Some(&mut self.heap),
-            Region::Input => Some(&mut self.input),
+            Region::Program => unreachable!("the program region is read-only"),
+            Region::Stack => &mut self.stack,
+            Region::Heap => &mut self.heap,
+            Region::Input => &mut self.input,
         }
     }
 

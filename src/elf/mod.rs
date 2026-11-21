@@ -6,6 +6,7 @@ mod parse;
 use crate::executable::{Executable, entrypoint_key, function_key, hash_symbol_name};
 use crate::insn::INSN_SIZE;
 use crate::memory::{PROGRAM_START, STACK_START};
+use crate::syscalls;
 use parse::{Elf, ParseError, Shdr, u32_at};
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -88,7 +89,14 @@ impl Executable {
 
         let mut relocated = bytes.to_vec();
         let mut functions = BTreeMap::new();
-        relocate(&elf, &text, &mut relocated, &mut functions)?;
+        let mut syscall_names = BTreeMap::new();
+        relocate(
+            &elf,
+            &text,
+            &mut relocated,
+            &mut functions,
+            &mut syscall_names,
+        )?;
 
         let entry_offset = elf.header.entry.saturating_sub(text.addr);
         if entry_offset % INSN_SIZE as u64 != 0 {
@@ -114,6 +122,7 @@ impl Executable {
             text: text_start..text_start + text.file_range().len(),
             entry_pc,
             functions,
+            syscall_names,
         })
     }
 }
@@ -166,8 +175,11 @@ fn validate(elf: &Elf) -> Result<(), ElfError> {
     Ok(())
 }
 
-/// Adds `key -> pc`. The same key for a different pc is an error.
+/// Adds `key -> pc`. A key that is already a syscall, or already a different pc, is an error.
 fn register(functions: &mut BTreeMap<u32, usize>, key: u32, pc: usize) -> Result<u32, ElfError> {
+    if syscalls::lookup(key).is_some() {
+        return Err(ElfError::SymbolHashCollision(key));
+    }
     match functions.entry(key) {
         Entry::Vacant(e) => {
             e.insert(pc);
@@ -209,6 +221,7 @@ fn relocate(
     text: &Shdr,
     out: &mut [u8],
     functions: &mut BTreeMap<u32, usize>,
+    syscall_names: &mut BTreeMap<u32, String>,
 ) -> Result<(), ElfError> {
     let text_range = text.file_range();
 
@@ -286,7 +299,9 @@ fn relocate(
                     };
                     register(functions, key, pc)?
                 } else {
-                    hash_symbol_name(name)
+                    let key = hash_symbol_name(name);
+                    syscall_names.insert(key, String::from_utf8_lossy(name).into());
+                    key
                 };
                 write_bytes(out, imm_offset, &key.to_le_bytes())?;
             }
@@ -351,6 +366,15 @@ fn read_only_sections(elf: &Elf, relocated: &[u8]) -> Result<(Vec<u8>, u64), Elf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn function_keys_may_not_clash_with_syscalls() {
+        let sol_log = hash_symbol_name(b"sol_log_");
+        assert_eq!(
+            register(&mut BTreeMap::new(), sol_log, 0),
+            Err(ElfError::SymbolHashCollision(sol_log))
+        );
+    }
 
     #[test]
     fn rejects_short_and_non_elf_files() {

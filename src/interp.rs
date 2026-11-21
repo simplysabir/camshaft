@@ -6,6 +6,7 @@ use crate::insn::{
     AluOp, ByteOrder, INSN_SIZE, Insn, JmpCond, Source, Width, decode_at, jump_target, split_slots,
 };
 use crate::memory::{INPUT_START, MAX_CALL_DEPTH, Memory, STACK_FRAME_SIZE, STACK_START};
+use crate::syscalls::{self, Logs};
 
 /// What a call saves so the matching `exit` can return to the caller.
 struct Frame {
@@ -23,6 +24,11 @@ pub struct Vm<'a> {
     /// Instructions started so far, including one that failed.
     pub insn_count: u64,
     pub memory: Memory<'a>,
+    /// What the program logged.
+    pub logs: Logs,
+    /// Bytes of the heap handed out by `sol_alloc_free_`.
+    pub heap_used: u64,
+    max_insns: u64,
     exe: &'a Executable,
     frames: Vec<Frame>,
 }
@@ -38,6 +44,9 @@ impl<'a> Vm<'a> {
             pc: exe.entry_pc,
             insn_count: 0,
             memory: Memory::new(&exe.ro, exe.ro_addr),
+            logs: Logs::default(),
+            heap_used: 0,
+            max_insns: 0,
             exe,
             frames: Vec::new(),
         }
@@ -47,6 +56,7 @@ impl<'a> Vm<'a> {
     ///
     /// The program must pass the verifier (M3); a register above r10 panics.
     pub fn run(&mut self, max_insns: u64) -> Result<u64, VmError> {
+        self.max_insns = max_insns;
         let slots = split_slots(self.exe.text_bytes())?;
         loop {
             if self.insn_count >= max_insns {
@@ -120,6 +130,9 @@ impl<'a> Vm<'a> {
                 let addr = self.reg[dst as usize].wrapping_add_signed(off.into());
                 self.memory.store(addr, size, self.operand(value))?;
             }
+            Insn::Call { imm } if let Some(syscall) = syscalls::lookup(imm as u32) => {
+                self.reg[0] = syscall(self, std::array::from_fn(|i| self.reg[i + 1]))?;
+            }
             Insn::Call { imm } => {
                 let target = *self
                     .exe
@@ -147,6 +160,11 @@ impl<'a> Vm<'a> {
         }
         self.pc = next;
         Ok(None)
+    }
+
+    /// Instructions left before the limit. Syscall costs are added in milestone 6.
+    pub fn remaining(&self) -> u64 {
+        self.max_insns.saturating_sub(self.insn_count)
     }
 
     /// Saves the caller's state and moves r10 to the next stack frame.
