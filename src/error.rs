@@ -63,6 +63,8 @@ pub enum SyscallError {
     BadSeeds,
     #[error("Unaligned pointer")]
     UnalignedPointer,
+    #[error("Invalid pointer")]
+    InvalidPointer,
     #[error("Overlapping copy")]
     CopyOverlapping,
     #[error("Return data too large ({0} > {1})")]

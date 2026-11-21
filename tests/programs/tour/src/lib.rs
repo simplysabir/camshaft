@@ -3,13 +3,13 @@
 //! each fail in one particular way. Built with `cargo build-sbf` into `tests/programs/tour.so`.
 //!
 //! Accounts: 0 is writable and owned by this program, with at least 32 bytes of data.
-//! 1 is read-only.
+//! 1 is read-only (scenario 12 expects it writable and owned by another program).
 
 use solana_program::{
     account_info::AccountInfo,
     clock::Clock,
-    entrypoint,
-    entrypoint::ProgramResult,
+    custom_heap_default, custom_panic_default,
+    entrypoint::{self, ProgramResult},
     hash::hashv,
     keccak,
     log::{sol_log_64, sol_log_compute_units},
@@ -24,11 +24,28 @@ use solana_program::{
 
 extern "C" {
     fn sol_sha256(vals: *const u8, len: u64, out: *mut u8) -> u64;
+    fn sol_get_clock_sysvar(out: *mut u8) -> u64;
 }
 
-entrypoint!(process);
+/// `entrypoint!` without the macro, so the program can see r2: Agave sets it to the address
+/// of the instruction data.
+#[no_mangle]
+pub unsafe extern "C" fn entrypoint(input: *mut u8, r2: *const u8) -> u64 {
+    let (program_id, accounts, data) = unsafe { entrypoint::deserialize(input) };
+    match process(program_id, &accounts, data, r2) {
+        Ok(()) => entrypoint::SUCCESS,
+        Err(error) => error.into(),
+    }
+}
+custom_heap_default!();
+custom_panic_default!();
 
-fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
+fn process(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &[u8],
+    r2: *const u8,
+) -> ProgramResult {
     match data.first().copied().unwrap_or(0) {
         0 => tour(program_id, accounts),
         1 => panic!("tour panicked"),
@@ -78,6 +95,18 @@ fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Progra
         10 => {
             let mut out = [0u8; 32];
             unsafe { sol_sha256(core::ptr::null(), 20_001, out.as_mut_ptr()) };
+            Ok(())
+        }
+        // Logs r2 and where the instruction data really is.
+        11 => {
+            sol_log_64(r2 as u64, data.as_ptr() as u64, 0, 0, 0);
+            Ok(())
+        }
+        // Shrinks an account it does not own.
+        12 => accounts[1].resize(4),
+        // Asks for the clock to be written into the input region.
+        13 => {
+            unsafe { sol_get_clock_sysvar(accounts[0].try_borrow_mut_data()?.as_mut_ptr()) };
             Ok(())
         }
         _ => Err(ProgramError::InvalidInstructionData),

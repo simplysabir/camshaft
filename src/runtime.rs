@@ -7,6 +7,7 @@ use crate::error::{InstructionError, SyscallError, VmError};
 use crate::executable::Executable;
 use crate::input::{self, Account, Instruction};
 use crate::interp::Vm;
+use crate::memory::INPUT_START;
 use base64::Engine;
 
 /// Solana's default compute budget for one instruction.
@@ -98,6 +99,9 @@ fn run(
 ) -> Result<Vec<(Pubkey, Account)>, (InstructionError, String)> {
     let failed = |e: InstructionError| (e.clone(), e.to_string());
     vm.memory.input = input::serialize(ix, accounts).map_err(failed)?;
+    // r2 points at the instruction data, which sits just before the 32-byte program id.
+    let data_offset = vm.memory.input.len() - 32 - ix.data.len();
+    vm.reg[2] = INPUT_START + data_offset as u64;
     let result = vm.run(budget);
 
     let consumed = budget - vm.ctx.remaining;

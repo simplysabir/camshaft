@@ -43,7 +43,8 @@ One JSON file describes one instruction:
 
 ## The input region
 
-The program gets everything in one buffer at `0x4_0000_0000`, and r1 points at it:
+The program gets everything in one buffer at `0x4_0000_0000`. r1 points at the start, and r2
+points at the instruction data:
 
 ```
 u64 number of accounts
@@ -65,9 +66,8 @@ camshaft reads the accounts back and checks every change, the way the runtime do
 |---|---|---|
 | lamports go down | the program owns the account | `ExternalAccountLamportSpend` |
 | lamports change | the account is writable | `ReadonlyLamportChange` |
-| data length changes | the program owns the account | `AccountDataSizeChanged` |
 | data grows more than 10 KiB | never | `InvalidRealloc` |
-| data changes | writable and owned | `ReadonlyDataModified` / `ExternalAccountDataModified` |
+| data or its length changes | writable and owned | `ReadonlyDataModified` / `ExternalAccountDataModified` |
 | owner changes | writable, owned, data all zeros | `ModifiedProgramId` |
 | total lamports change | never | `UnbalancedInstruction` |
 
@@ -80,7 +80,7 @@ If the instruction fails, no account changes are kept.
 | `sol_sha256`, `sol_keccak256` | hash a list of byte slices into 32 bytes |
 | `sol_create_program_address` | sha256 of seeds + program id + `"ProgramDerivedAddress"`; returns 1 if that lands on the ed25519 curve |
 | `sol_try_find_program_address` | tries bump seeds 255 down to 1 until one is off the curve |
-| `sol_get_clock_sysvar`, `sol_get_rent_sysvar` | copy the clock (40 bytes) or rent (24 bytes) into memory |
+| `sol_get_clock_sysvar`, `sol_get_rent_sysvar` | copy the clock (40 bytes) or rent (24 bytes) into memory below the input region |
 | `sol_set_return_data`, `sol_get_return_data` | up to 1024 bytes a program hands back to its caller |
 
 A program derived address (PDA) must be off the curve so no private key can sign for it.
@@ -119,10 +119,11 @@ syscall (like an access violation) charges the whole budget.
 
 `tests/runtime.rs` runs the same instruction through camshaft and through Agave 4.4.1
 (using mollusk) and compares the result, every log line, compute units, final accounts and
-return data. It covers:
+return data. Agave runs with the feature flags mainnet had on 2026-11-21. It covers:
 
 - `counter` (`tests/programs/counter/`), plus three ways to make it fail.
 - SPL Memo, dumped from mainnet with `solana program dump`, plus a missing signature and bad UTF-8.
-- `tour` (`tests/programs/tour/`): one scenario that uses every new syscall, and ten that each
-  fail differently (panic, custom error, read-only write, unbalanced lamports, bad pointer,
-  endless loop, too many PDA tries, log overflow, illegal owner change, too many hash slices).
+- `tour` (`tests/programs/tour/`): one scenario that uses every new syscall, one that logs r2,
+  and twelve that each fail differently (panic, custom error, read-only write, unbalanced
+  lamports, bad pointer, endless loop, too many PDA tries, log overflow, illegal owner change,
+  too many hash slices, shrinking an account it does not own, a sysvar written into the input).

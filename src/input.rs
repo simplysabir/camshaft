@@ -162,7 +162,7 @@ pub fn deserialize(
         }
         let data = bytes(input, at, len)?;
         // Unchanged data is fine even where changing it would not be.
-        match rules.resize(pre_len, len) {
+        match rules.change_data() {
             Ok(()) => account.data = data.to_vec(),
             Err(e) if account.data != data => return Err(e),
             Err(_) => {}
@@ -195,10 +195,8 @@ impl Rules {
         Ok(())
     }
 
-    fn resize(&self, before: usize, after: usize) -> Result<(), InstructionError> {
-        if before != after && !self.owned {
-            return Err(InstructionError::AccountDataSizeChanged);
-        }
+    /// Covers resizing too: Agave 4.4 dropped the separate size check.
+    fn change_data(&self) -> Result<(), InstructionError> {
         if !self.writable {
             return Err(InstructionError::ReadonlyDataModified);
         }

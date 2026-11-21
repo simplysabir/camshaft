@@ -42,11 +42,26 @@ fn agave(env: &Environment) -> Mollusk {
     mollusk
 }
 
-/// Everything on, except the flags that are not active on mainnet yet.
+/// Mainnet's flags as of 2026-11-21: everything on except these.
 fn mainnet_features() -> SVMFeatureSet {
     SVMFeatureSet {
         virtual_address_space_adjustments: false,
         account_data_direct_mapping: false,
+        direct_account_pointers_in_program_input: false,
+        blake3_syscall_enabled: false,
+        enable_big_mod_exp_syscall: false,
+        remaining_compute_units_syscall_enabled: false,
+        enable_sha512_syscall: false,
+        disable_sbpf_v0_execution: false,
+        reenable_sbpf_v0_execution: false,
+        disable_sbpf_v0_v1_v2_deployment: false,
+        deprecate_legacy_vote_ixs: false,
+        increase_tx_account_lock_limit: false,
+        raise_cpi_nesting_limit_to_8: false,
+        block_revenue_sharing: false,
+        vote_account_initialize_v2: false,
+        relax_fee_payer_constraint: false,
+        loader_v3_set_program_data_to_elf_length: false,
         ..SVMFeatureSet::all_enabled()
     }
 }
@@ -171,12 +186,16 @@ fn spl_memo_from_mainnet() {
     }
 }
 
-/// Scenario 0 uses every syscall; 1 to 10 each fail in a different way.
+/// Scenario 0 uses every syscall, 11 logs r2, and the others each fail in a different way.
 #[test]
 fn tour_of_every_syscall_and_failure() {
-    for scenario in 0..=10u8 {
+    for scenario in 0..=13u8 {
         let mut parsed = fixture("tour");
         parsed.instruction.data = vec![scenario];
+        if scenario == 12 {
+            parsed.instruction.accounts[1].is_writable = true;
+            parsed.accounts[1].1.owner = [5; 32];
+        }
         compare("tour", &parsed);
     }
 }
