@@ -1,6 +1,7 @@
 //! Checks our verifier against the reference `RequisiteVerifier` for v0.
 
 use camshaft::verifier::verify;
+use camshaft::version::Version;
 use solana_sbpf::{
     assembler::assemble,
     ebpf,
@@ -20,14 +21,21 @@ fn slot(opc: u8, dst: u8, src: u8, off: i16, imm: i32) -> [u8; 8] {
 const EXIT: [u8; 8] = [0x95, 0, 0, 0, 0, 0, 0, 0];
 
 /// Both verifiers' results, formatted the same way.
-fn both(program: &[u8]) -> (String, String) {
+fn both(program: &[u8], version: Version) -> (String, String) {
+    let sbpf_version = match version {
+        Version::V0 => SBPFVersion::V0,
+        Version::V3 => SBPFVersion::V3,
+    };
     let reference = RequisiteVerifier::verify(
         program,
-        SBPFVersion::V0,
+        sbpf_version,
         &Config::default(),
         &FunctionRegistry::<usize>::default(),
     );
-    (format!("{:?}", verify(program)), format!("{reference:?}"))
+    (
+        format!("{:?}", verify(program, version)),
+        format!("{reference:?}"),
+    )
 }
 
 #[test]
@@ -49,8 +57,10 @@ fn every_opcode_verifies_like_the_reference() {
                                 vec![slot(0xb7, 0, 0, 0, 0), slot(opc, dst, src, off, imm)];
                             program.extend(second.map(|s| [s, EXIT]).into_iter().flatten());
                             let program = program.as_flattened();
-                            let (ours, reference) = both(program);
-                            assert_eq!(ours, reference, "program {program:02x?}");
+                            for version in [Version::V0, Version::V3] {
+                                let (ours, reference) = both(program, version);
+                                assert_eq!(ours, reference, "{version:?} {program:02x?}");
+                            }
                         }
                     }
                 }
@@ -166,7 +176,7 @@ fn reference_test_suite_cases() {
         .chain(shifts.into_iter().map(|(p, e)| (p, e.to_string())))
         .chain(sdivs);
     for (program, expected) in all {
-        let (ours, reference) = both(&program);
+        let (ours, reference) = both(&program, Version::V0);
         assert_eq!(reference, expected, "reference, program {program:02x?}");
         assert_eq!(ours, expected, "ours, program {program:02x?}");
     }

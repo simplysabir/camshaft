@@ -34,14 +34,14 @@ pub(super) enum ParseError {
     NoDynamicStringTable,
 }
 
-const EHDR_SIZE: usize = 64;
-const PHDR_SIZE: usize = 56;
+pub(super) const EHDR_SIZE: usize = 64;
+pub(super) const PHDR_SIZE: usize = 56;
 const SHDR_SIZE: usize = 64;
 const SYM_SIZE: usize = 24;
 const REL_SIZE: usize = 16;
 const DYN_SIZE: usize = 16;
 
-const PT_LOAD: u32 = 1;
+pub(super) const PT_LOAD: u32 = 1;
 const PT_DYNAMIC: u32 = 2;
 const SHT_NULL: u32 = 0;
 const SHT_SYMTAB: u32 = 2;
@@ -69,23 +69,23 @@ fn u64_at(b: &[u8], at: usize) -> u64 {
 }
 
 pub(super) struct Header {
-    pub(super) ident: [u8; 8],
+    pub(super) ident: [u8; 16],
     pub(super) e_type: u16,
     pub(super) machine: u16,
-    version: u32,
+    pub(super) version: u32,
     pub(super) entry: u64,
-    phoff: u64,
+    pub(super) phoff: u64,
     shoff: u64,
-    ehsize: u16,
-    phentsize: u16,
-    phnum: u16,
+    pub(super) ehsize: u16,
+    pub(super) phentsize: u16,
+    pub(super) phnum: u16,
     shentsize: u16,
     shnum: u16,
     shstrndx: u16,
 }
 
 impl Header {
-    fn read(b: &[u8]) -> Self {
+    pub(super) fn read(b: &[u8]) -> Self {
         Self {
             ident: std::array::from_fn(|i| b[i]),
             e_type: u16_at(b, 16),
@@ -104,20 +104,24 @@ impl Header {
     }
 }
 
-struct Phdr {
-    p_type: u32,
-    offset: u64,
-    vaddr: u64,
-    filesz: u64,
-    memsz: u64,
+pub(super) struct Phdr {
+    pub(super) p_type: u32,
+    pub(super) flags: u32,
+    pub(super) offset: u64,
+    pub(super) vaddr: u64,
+    pub(super) paddr: u64,
+    pub(super) filesz: u64,
+    pub(super) memsz: u64,
 }
 
 impl Phdr {
-    fn read(b: &[u8]) -> Self {
+    pub(super) fn read(b: &[u8]) -> Self {
         Self {
             p_type: u32_at(b, 0),
+            flags: u32_at(b, 4),
             offset: u64_at(b, 8),
             vaddr: u64_at(b, 16),
+            paddr: u64_at(b, 24),
             filesz: u64_at(b, 32),
             memsz: u64_at(b, 40),
         }

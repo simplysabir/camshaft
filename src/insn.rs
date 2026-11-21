@@ -1,5 +1,6 @@
-//! Turns sBPF v0 bytecode into `Insn` values. Reference: `ebpf.rs` in anza-xyz/sbpf.
+//! Turns sBPF bytecode into `Insn` values. Reference: `ebpf.rs` in anza-xyz/sbpf.
 
+use crate::version::Version;
 use thiserror::Error;
 
 /// Bytes per instruction slot. `lddw` uses two slots.
@@ -48,25 +49,37 @@ pub enum Insn {
     Ja {
         off: i16,
     },
+    /// `W32` (v3 only) compares the low 32 bits of each side.
     Jump {
+        width: Width,
         cond: JmpCond,
         dst: u8,
         source: Source,
         off: i16,
     },
-    /// `imm` is a hash naming a syscall or function.
-    Call {
-        imm: i32,
-    },
-    /// In v0 the register number is in `imm`.
+    Call(CallTarget),
+    /// Jumps to the address in register `reg`. v0 keeps the number in imm, v3 in dst.
     Callx {
-        imm: i32,
+        reg: i32,
     },
     Exit,
-    /// Not a v0 opcode.
+    /// Not an opcode in this version.
     Unknown {
         opc: u8,
     },
+}
+
+/// What a `call imm` calls. The version and the src field decide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallTarget {
+    /// v0: a key naming a syscall, or else a function in the function table.
+    Key(i32),
+    /// v3 with src 0: a key naming a syscall.
+    Syscall(i32),
+    /// v3 with src 1: the instruction at `pc + 1 + offset`.
+    Relative(i32),
+    /// v3 with any other src: fails when it runs. Holds the imm.
+    Invalid(i32),
 }
 
 /// The second operand: an immediate or a register.
@@ -179,12 +192,12 @@ impl Insn {
 }
 
 /// Decodes a program into `(pc, insn)` pairs. pc counts slots, not instructions.
-pub fn decode_program(program: &[u8]) -> Result<Vec<(usize, Insn)>, DecodeError> {
+pub fn decode_program(program: &[u8], version: Version) -> Result<Vec<(usize, Insn)>, DecodeError> {
     let slots = split_slots(program)?;
     let mut insns = Vec::with_capacity(slots.len());
     let mut pc = 0;
     while pc < slots.len() {
-        let insn = decode_at(slots, pc)?;
+        let insn = decode_at(slots, pc, version)?;
         insns.push((pc, insn));
         pc += insn.slots();
     }
@@ -206,10 +219,14 @@ pub fn split_slots(program: &[u8]) -> Result<&[[u8; INSN_SIZE]], DecodeError> {
 }
 
 /// Decodes the instruction at slot `pc`. Panics if `pc` is out of bounds.
-pub fn decode_at(slots: &[[u8; INSN_SIZE]], pc: usize) -> Result<Insn, DecodeError> {
+pub fn decode_at(
+    slots: &[[u8; INSN_SIZE]],
+    pc: usize,
+    version: Version,
+) -> Result<Insn, DecodeError> {
     let raw = RawInsn::from_bytes(&slots[pc]);
     if raw.opc != LDDW {
-        return Ok(decode_single(raw));
+        return Ok(decode_single(raw, version));
     }
     let high = slots
         .get(pc + 1)
@@ -222,7 +239,7 @@ pub fn decode_at(slots: &[[u8; INSN_SIZE]], pc: usize) -> Result<Insn, DecodeErr
 
 /// Decodes a one-slot instruction.
 /// ALU/jump opcode bits: `op(4) source(1) class(3)`. Memory: `mode(3) size(2) class(3)`.
-fn decode_single(raw: RawInsn) -> Insn {
+fn decode_single(raw: RawInsn, version: Version) -> Insn {
     let RawInsn {
         opc,
         dst,
@@ -308,9 +325,37 @@ fn decode_single(raw: RawInsn) -> Insn {
                 source,
             }
         }
-        0x05 => {
+        // 0x05 is the 64-bit jump class, which also holds ja, call, callx and exit.
+        // 0x06 is v3's 32-bit jump class.
+        class @ (0x05 | 0x06) => {
+            let width = match class {
+                0x05 => Width::W64,
+                _ if version == Version::V3 => Width::W32,
+                _ => return unknown,
+            };
+            if width == Width::W64 {
+                match (opc & 0xf0, is_imm) {
+                    (0x00, true) => return Insn::Ja { off },
+                    (0x80, true) => {
+                        return Insn::Call(match (version, src) {
+                            (Version::V0, _) => CallTarget::Key(imm),
+                            (Version::V3, 0) => CallTarget::Syscall(imm),
+                            (Version::V3, 1) => CallTarget::Relative(imm),
+                            (Version::V3, _) => CallTarget::Invalid(imm),
+                        });
+                    }
+                    (0x80, false) => {
+                        let reg = match version {
+                            Version::V0 => imm,
+                            Version::V3 => dst.into(),
+                        };
+                        return Insn::Callx { reg };
+                    }
+                    (0x90, true) => return Insn::Exit,
+                    _ => {}
+                }
+            }
             let cond = match opc & 0xf0 {
-                0x00 if is_imm => return Insn::Ja { off },
                 0x10 => JmpCond::Eq,
                 0x20 => JmpCond::Gt,
                 0x30 => JmpCond::Ge,
@@ -318,9 +363,6 @@ fn decode_single(raw: RawInsn) -> Insn {
                 0x50 => JmpCond::Ne,
                 0x60 => JmpCond::Sgt,
                 0x70 => JmpCond::Sge,
-                0x80 if is_imm => return Insn::Call { imm },
-                0x80 => return Insn::Callx { imm },
-                0x90 if is_imm => return Insn::Exit,
                 0xa0 => JmpCond::Lt,
                 0xb0 => JmpCond::Le,
                 0xc0 => JmpCond::Slt,
@@ -328,13 +370,14 @@ fn decode_single(raw: RawInsn) -> Insn {
                 _ => return unknown,
             };
             Insn::Jump {
+                width,
                 cond,
                 dst,
                 source,
                 off,
             }
         }
-        // 0x00: lddw, handled in `decode_at`. 0x06: not used in v0.
+        // 0x00: lddw, handled in `decode_at`.
         _ => unknown,
     }
 }
@@ -344,12 +387,12 @@ mod tests {
     use super::*;
 
     /// Decodes `opc` with zeroed fields. The extra slot completes an `lddw`.
-    fn decode_opcode(opc: u8) -> Insn {
-        decode_at(&[[opc, 0, 0, 0, 0, 0, 0, 0], [0; 8]], 0).unwrap()
+    fn decode_opcode(opc: u8, version: Version) -> Insn {
+        decode_at(&[[opc, 0, 0, 0, 0, 0, 0, 0], [0; 8]], 0, version).unwrap()
     }
 
     fn decode_one(bytes: [u8; 8]) -> Insn {
-        match decode_program(&bytes).unwrap()[..] {
+        match decode_program(&bytes, Version::V0).unwrap()[..] {
             [(0, insn)] => insn,
             ref other => panic!("expected one instruction, got {other:?}"),
         }
@@ -362,6 +405,7 @@ mod tests {
         assert_eq!(
             insn,
             Insn::Jump {
+                width: Width::W64,
                 cond: JmpCond::Sgt,
                 dst: 2,
                 source: Source::Reg(1),
@@ -389,7 +433,7 @@ mod tests {
             0x95, 0, 0, 0, 0, 0, 0, 0, // exit
         ];
         assert_eq!(
-            decode_program(&program).unwrap(),
+            decode_program(&program, Version::V0).unwrap(),
             [
                 (
                     0,
@@ -406,15 +450,15 @@ mod tests {
     #[test]
     fn rejects_malformed_programs() {
         assert_eq!(
-            decode_program(&[0x95; 9]),
+            decode_program(&[0x95; 9], Version::V0),
             Err(DecodeError::PartialSlot { len: 9 })
         );
         let lone_lddw = [0x95, 0, 0, 0, 0, 0, 0, 0, 0x18, 0, 0, 0, 0, 0, 0, 0];
         assert_eq!(
-            decode_program(&lone_lddw),
+            decode_program(&lone_lddw, Version::V0),
             Err(DecodeError::IncompleteLddw { pc: 1 })
         );
-        assert_eq!(decode_program(&[]), Ok(vec![]));
+        assert_eq!(decode_program(&[], Version::V0), Ok(vec![]));
     }
 
     #[test]
@@ -423,15 +467,35 @@ mod tests {
         for opc in [
             0x0d, 0x8c, 0x8f, 0x9d, 0xd7, 0xdf, 0xf7, 0x20, 0x06, 0x0e, 0xe4, 0xe5,
         ] {
-            assert_eq!(decode_opcode(opc), Insn::Unknown { opc }, "{opc:#x}");
+            assert_eq!(
+                decode_opcode(opc, Version::V0),
+                Insn::Unknown { opc },
+                "{opc:#x}"
+            );
         }
     }
 
     #[test]
-    fn v0_has_91_opcodes() {
-        let valid = (0..=255u8)
-            .filter(|&opc| !matches!(decode_opcode(opc), Insn::Unknown { .. }))
-            .count();
-        assert_eq!(valid, 91);
+    fn v0_has_91_opcodes_and_v3_adds_22_jumps() {
+        let valid = |version| {
+            (0..=255u8)
+                .filter(|&opc| !matches!(decode_opcode(opc, version), Insn::Unknown { .. }))
+                .count()
+        };
+        assert_eq!((valid(Version::V0), valid(Version::V3)), (91, 113));
+    }
+
+    #[test]
+    fn callx_register_moves_to_dst_in_v3() {
+        // callx with dst 3 and imm 5
+        let slots = [[0x8d, 0x03, 0, 0, 5, 0, 0, 0]];
+        assert_eq!(
+            decode_at(&slots, 0, Version::V0),
+            Ok(Insn::Callx { reg: 5 })
+        );
+        assert_eq!(
+            decode_at(&slots, 0, Version::V3),
+            Ok(Insn::Callx { reg: 3 })
+        );
     }
 }

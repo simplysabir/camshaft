@@ -3,19 +3,21 @@
 mod common;
 
 use camshaft::error::VmError;
-use common::{assemble_reference, ours_from_reference_text, run_both};
+use common::{assemble_reference, each_version, ours_from_reference_text, run_both};
 
 const LIMIT: u64 = 100_000;
 
-/// Assembles `src`, runs it on both VMs and returns camshaft's result.
+/// Assembles `src` as v0 and as v3, runs each on both VMs and returns camshaft's v0 result.
 fn check(src: &str) -> Result<u64, VmError> {
-    let reference = assemble_reference(src);
-    run_both(
-        &reference,
-        &ours_from_reference_text(&reference),
-        &[],
-        LIMIT,
-    )
+    each_version(|version| {
+        let reference = assemble_reference(src, version);
+        run_both(
+            &reference,
+            &ours_from_reference_text(&reference),
+            &[],
+            LIMIT,
+        )
+    })
 }
 
 #[test]

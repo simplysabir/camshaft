@@ -6,11 +6,15 @@
 mod common;
 
 use camshaft::memory::{HEAP_START, INPUT_START, PROGRAM_START, STACK_START};
-use common::{Reference, input, loader, ours_from_reference_text, run_both, verify_both};
+use camshaft::version::Version;
+use common::{
+    Reference, VERSIONS, input, loader, ours_from_reference_text, run_both, sbpf_version,
+    verify_both,
+};
 use proptest::prelude::*;
 use proptest::sample::Index;
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
-use solana_sbpf::program::{FunctionRegistry, SBPFVersion};
+use solana_sbpf::program::FunctionRegistry;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -25,8 +29,10 @@ enum Op {
         dst: u8,
         value: u64,
     },
+    /// `wide: false` makes a v3 conditional jump compare 32 bits. v0 has only 64-bit jumps.
     Jump {
         opc: u8,
+        wide: bool,
         dst: u8,
         src: u8,
         imm: i32,
@@ -55,6 +61,7 @@ impl Op {
 /// A main body followed by functions. Every part ends with `exit`, except sometimes the last.
 #[derive(Debug, Clone)]
 struct Program {
+    version: Version,
     parts: Vec<Vec<Op>>,
 }
 
@@ -89,26 +96,46 @@ impl Program {
                 }
                 Op::Jump {
                     opc,
+                    wide,
                     dst,
                     src,
                     imm,
                     target,
                 } => {
                     let off = *target.get(&pcs) as i64 - pc as i64 - 1;
+                    // Class 0x05 is 64-bit jumps, 0x06 the v3 32-bit ones. `ja` has no 32-bit form.
+                    let jmp32 = self.version == Version::V3 && !wide && opc != 0x05;
+                    let opc = if jmp32 { opc + 1 } else { opc };
                     out.extend(slot(opc, dst, src, off as i16, imm));
                 }
-                Op::Call(f) => out.extend(slot(0x85, 0, 0, 0, function_pc(f) as i32)),
+                Op::Call(f) => out.extend(match self.version {
+                    // v0 names the function by key, which here is its pc.
+                    Version::V0 => slot(0x85, 0, 0, 0, function_pc(f) as i32),
+                    // v3 jumps relative, with src 1.
+                    Version::V3 => slot(
+                        0x85,
+                        0,
+                        1,
+                        0,
+                        (function_pc(f) as i64 - pc as i64 - 1) as i32,
+                    ),
+                }),
                 Op::Callx { reg, function } => {
                     let addr = PROGRAM_START + 8 * function_pc(function) as u64;
                     out.extend(slot(0x18, reg, 0, 0, addr as i32));
                     out.extend(slot(0, 0, 0, 0, (addr >> 32) as i32));
-                    out.extend(slot(0x8d, 0, 0, 0, reg.into()));
+                    out.extend(callx(reg));
                 }
                 Op::Exit => out.extend(slot(0x95, 0, 0, 0, 0)),
             }
         }
         (out, functions)
     }
+}
+
+/// v0 reads the register from imm and v3 from dst, so set both.
+fn callx(reg: u8) -> [u8; 8] {
+    slot(0x8d, reg, 0, 0, reg.into())
 }
 
 /// Registers allowed in the dst field: r0 to r9. Only stores may name r10 there.
@@ -207,17 +234,19 @@ fn op() -> impl Strategy<Value = Op> {
     let jump = (
         prop::sample::select(jumps),
         prop::bool::ANY,
+        prop::bool::ANY,
         reg(),
         any_reg(),
         imm(),
         any::<Index>(),
     )
-        .prop_map(|(opc, by_reg, dst, src, imm, target)| Op::Jump {
+        .prop_map(|(opc, by_reg, wide, dst, src, imm, target)| Op::Jump {
             opc: if opc == 0x05 {
                 opc
             } else {
                 opc | (by_reg as u8) << 3
             },
+            wide,
             dst,
             src,
             imm,
@@ -229,9 +258,9 @@ fn op() -> impl Strategy<Value = Op> {
         3 => jump,
         1 => any::<Index>().prop_map(Op::Call),
         1 => (reg(), any::<Index>()).prop_map(|(reg, function)| Op::Callx { reg, function }),
-        // A call to a key that may not exist, and a callx to whatever a register holds.
-        1 => any::<i32>().prop_map(|key| Op::Plain(slot(0x85, 0, 0, 0, key))),
-        1 => reg().prop_map(|reg| Op::Plain(slot(0x8d, 0, 0, 0, reg.into()))),
+        // A call with any src and imm, and a callx to whatever a register holds.
+        1 => (any_reg(), imm()).prop_map(|(src, imm)| Op::Plain(slot(0x85, 0, src, 0, imm))),
+        1 => reg().prop_map(|reg| Op::Plain(callx(reg))),
         1 => Just(Op::Exit),
     ]
 }
@@ -253,18 +282,19 @@ fn program() -> impl Strategy<Value = Program> {
             .collect::<Vec<_>>()
     });
     let parts = (
+        prop::sample::select(VERSIONS.to_vec()),
         prefix,
         part(),
         prop::collection::vec(part(), 1..4),
         prop::bool::weighted(0.1),
     );
-    parts.prop_map(|(prefix, main, functions, run_off_the_end)| {
+    parts.prop_map(|(version, prefix, main, functions, run_off_the_end)| {
         let mut parts = vec![[prefix, main].concat()];
         parts.extend(functions);
         if run_off_the_end {
             parts.last_mut().unwrap().pop();
         }
-        Program { parts }
+        Program { version, parts }
     })
 }
 
@@ -281,16 +311,24 @@ fn check(program: &Program, budget: u64) -> String {
             .register_function(pc as u32, name.as_bytes(), pc)
             .unwrap();
     }
-    let reference = Reference::from_text_bytes(&text, loader(), SBPFVersion::V0, registry).unwrap();
+    let version = program.version;
+    let reference =
+        Reference::from_text_bytes(&text, loader(version), sbpf_version(version), registry)
+            .unwrap();
     let ours = ours_from_reference_text(&reference);
     assert!(
         verify_both(&reference, &ours),
         "the generator made an invalid program"
     );
-    match run_both(&reference, &ours, &input(), budget) {
+    let ending = match run_both(&reference, &ours, &input(), budget) {
         Ok(_) => "Ok".into(),
-        Err(e) => format!("{e:?}").split(['(', ' ']).next().unwrap().into(),
-    }
+        Err(e) => format!("{e:?}")
+            .split(['(', ' '])
+            .next()
+            .unwrap()
+            .to_string(),
+    };
+    format!("{version:?} {ending}")
 }
 
 /// Programs per batch. Each batch gets its own numbered seed.

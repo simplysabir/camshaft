@@ -1,10 +1,11 @@
-//! Runs v0 bytecode.
+//! Runs v0 and v3 bytecode.
 
 use crate::context::Context;
 use crate::error::VmError;
 use crate::executable::Executable;
 use crate::insn::{
-    AluOp, ByteOrder, INSN_SIZE, Insn, JmpCond, Source, Width, decode_at, jump_target, split_slots,
+    AluOp, ByteOrder, CallTarget, INSN_SIZE, Insn, JmpCond, Source, Width, decode_at, jump_target,
+    split_slots,
 };
 use crate::memory::{INPUT_START, MAX_CALL_DEPTH, Memory, STACK_FRAME_SIZE, STACK_START};
 use crate::syscalls;
@@ -41,7 +42,7 @@ impl<'a> Vm<'a> {
             reg,
             pc: exe.entry_pc,
             insn_count: 0,
-            memory: Memory::new(&exe.ro, exe.ro_addr),
+            memory: Memory::new(&exe.ro, exe.ro_addr, exe.version),
             ctx: Context::default(),
             exe,
             frames: Vec::new(),
@@ -53,7 +54,7 @@ impl<'a> Vm<'a> {
     /// The program must pass the verifier (M3); a register above r10 panics.
     pub fn run(&mut self, budget: u64) -> Result<u64, VmError> {
         self.ctx.remaining = budget;
-        let slots = split_slots(self.exe.text_bytes())?;
+        let slots = split_slots(&self.exe.text)?;
         loop {
             if self.ctx.remaining == 0 {
                 return Err(VmError::ExceededMaxInstructions);
@@ -63,7 +64,7 @@ impl<'a> Vm<'a> {
             if self.pc >= slots.len() {
                 return Err(VmError::ExecutionOverrun);
             }
-            if let Some(r0) = self.step(decode_at(slots, self.pc)?)? {
+            if let Some(r0) = self.step(decode_at(slots, self.pc, self.exe.version)?)? {
                 return Ok(r0);
             }
         }
@@ -100,12 +101,20 @@ impl<'a> Vm<'a> {
             }
             Insn::Ja { off } => next = jump_target(self.pc, off),
             Insn::Jump {
+                width,
                 cond,
                 dst,
                 source,
                 off,
             } => {
-                if condition(cond, self.reg[dst as usize], self.operand(source)) {
+                let (a, b) = (self.reg[dst as usize], self.operand(source));
+                let (a, b) = match width {
+                    Width::W64 => (a, b),
+                    // Sign-extending both low halves keeps the answer of every 32-bit
+                    // comparison, signed or unsigned, so one 64-bit `condition` serves both.
+                    Width::W32 => (a as i32 as u64, b as i32 as u64),
+                };
+                if condition(cond, a, b) {
                     next = jump_target(self.pc, off);
                 }
             }
@@ -127,23 +136,23 @@ impl<'a> Vm<'a> {
                 let addr = self.reg[dst as usize].wrapping_add_signed(off.into());
                 self.memory.store(addr, size, self.operand(value))?;
             }
-            Insn::Call { imm } if let Some(syscall) = syscalls::lookup(imm as u32) => {
+            Insn::Call(CallTarget::Key(key) | CallTarget::Syscall(key))
+                if let Some(syscall) = syscalls::lookup(key as u32) =>
+            {
                 self.reg[0] = syscall(self, std::array::from_fn(|i| self.reg[i + 1]))?;
             }
-            Insn::Call { imm } => {
-                let target = *self
-                    .exe
-                    .functions
-                    .get(&(imm as u32))
+            Insn::Call(target) => {
+                let target = self
+                    .function_pc(target)
                     .ok_or(VmError::UnsupportedInstruction)?;
                 self.push_frame()?;
-                next = self.call_target(target as u64)?;
+                next = self.call_target(target)?;
             }
-            Insn::Callx { imm } => {
-                let addr = self.reg[imm as usize];
+            Insn::Callx { reg } => {
+                let addr = self.reg[reg as usize];
                 self.push_frame()?;
                 next =
-                    self.call_target(addr.wrapping_sub(self.exe.text_addr()) / INSN_SIZE as u64)?;
+                    self.call_target(addr.wrapping_sub(self.exe.text_addr) / INSN_SIZE as u64)?;
             }
             Insn::Exit => match self.frames.pop() {
                 None => return Ok(Some(self.reg[0])),
@@ -159,6 +168,21 @@ impl<'a> Vm<'a> {
         Ok(None)
     }
 
+    /// Where a `call` that is not a syscall goes, if anywhere. A v3 relative call must land
+    /// inside the code; a v0 key's pc is checked after the frame is pushed, as in the reference.
+    fn function_pc(&self, target: CallTarget) -> Option<u64> {
+        match target {
+            CallTarget::Key(key) => self.exe.functions.get(&(key as u32)).map(|&pc| pc as u64),
+            CallTarget::Relative(off) => {
+                let target = self.pc as i64 + 1 + i64::from(off);
+                (0..self.text_slots() as i64)
+                    .contains(&target)
+                    .then_some(target as u64)
+            }
+            CallTarget::Syscall(_) | CallTarget::Invalid(_) => None,
+        }
+    }
+
     /// Saves the caller's state and moves r10 to the next stack frame.
     fn push_frame(&mut self) -> Result<(), VmError> {
         self.frames.push(Frame {
@@ -169,17 +193,25 @@ impl<'a> Vm<'a> {
         if self.frames.len() == MAX_CALL_DEPTH as usize {
             return Err(VmError::CallDepthExceeded);
         }
-        // Skip this frame and the unmapped gap after it.
-        self.reg[10] = self.reg[10].wrapping_add(2 * STACK_FRAME_SIZE);
+        // Skip this frame, and in v0 the unmapped gap after it.
+        let frames = if self.exe.version.stack_frame_gaps() {
+            2
+        } else {
+            1
+        };
+        self.reg[10] = self.reg[10].wrapping_add(frames * STACK_FRAME_SIZE);
         Ok(())
     }
 
     fn call_target(&self, pc: u64) -> Result<usize, VmError> {
-        let slots = self.exe.text.len() / INSN_SIZE;
         usize::try_from(pc)
             .ok()
-            .filter(|&pc| pc < slots)
+            .filter(|&pc| pc < self.text_slots())
             .ok_or(VmError::CallOutsideTextSegment)
+    }
+
+    fn text_slots(&self) -> usize {
+        self.exe.text.len() / INSN_SIZE
     }
 
     /// The second operand as 64 bits. Immediates are sign-extended.
@@ -261,6 +293,7 @@ fn condition(cond: JmpCond, a: u64, b: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::version::Version;
 
     fn slot(opc: u8, regs: u8, off: i16, imm: i32) -> [u8; 8] {
         let [o0, o1] = off.to_le_bytes();
@@ -269,7 +302,7 @@ mod tests {
     }
 
     fn run(slots: &[[u8; 8]]) -> Result<u64, VmError> {
-        let exe = Executable::from_text(slots.as_flattened(), Default::default());
+        let exe = Executable::from_text(slots.as_flattened(), Default::default(), Version::V0);
         Vm::new(&exe).run(100)
     }
 
@@ -314,7 +347,7 @@ mod tests {
     #[test]
     fn exit_returns_r0_and_counts_instructions() {
         let program = [slot(0xb7, 0, 0, 42), EXIT];
-        let exe = Executable::from_text(program.as_flattened(), Default::default());
+        let exe = Executable::from_text(program.as_flattened(), Default::default(), Version::V0);
         let mut vm = Vm::new(&exe);
         assert_eq!(vm.run(100), Ok(42));
         assert_eq!((vm.pc, vm.insn_count), (1, 2));

@@ -1,20 +1,23 @@
-//! A loaded program: its read-only memory, where the code is, and its functions.
+//! A loaded program: its version, code, read-only memory and functions.
 
-use crate::memory::PROGRAM_START;
+use crate::memory::{PROGRAM_START, RODATA_START};
 use crate::verifier::{VerifierError, verify};
+use crate::version::Version;
 use std::collections::BTreeMap;
-use std::ops::Range;
 
 pub struct Executable {
-    /// The read-only region: code plus read-only data.
+    pub version: Version,
+    /// The read-only region. In v0 it holds the code too; in v3 only data.
     pub ro: Vec<u8>,
     /// Virtual address of `ro[0]`.
     pub ro_addr: u64,
-    /// Where the code is inside `ro`.
-    pub text: Range<usize>,
+    /// The bytecode.
+    pub text: Vec<u8>,
+    /// Virtual address of `text[0]`.
+    pub text_addr: u64,
     /// Slot index where execution starts.
     pub entry_pc: usize,
-    /// `call imm` key to the pc it jumps to.
+    /// v0 only: `call imm` key to the pc it jumps to. v3 calls are relative.
     pub functions: BTreeMap<u32, usize>,
     /// Names of the syscalls the program calls, by key. Used to name a missing syscall.
     pub syscall_names: BTreeMap<u32, String>,
@@ -23,29 +26,27 @@ pub struct Executable {
 impl Executable {
     /// Raw bytecode at the start of the program region. `functions` maps call keys to pcs.
     /// Starts at the function named `entrypoint` if there is one, else at pc 0.
-    pub fn from_text(text: &[u8], mut functions: BTreeMap<u32, usize>) -> Self {
+    /// Like the reference, the code is also readable as data: at `0x1_0000_0000` in v0 and
+    /// at 0 in v3.
+    pub fn from_text(text: &[u8], mut functions: BTreeMap<u32, usize>, version: Version) -> Self {
         let entry_pc = *functions.entry(entrypoint_key()).or_insert(0);
         Self {
+            version,
             ro: text.to_vec(),
-            ro_addr: PROGRAM_START,
-            text: 0..text.len(),
+            ro_addr: match version {
+                Version::V0 => PROGRAM_START,
+                Version::V3 => RODATA_START,
+            },
+            text: text.to_vec(),
+            text_addr: PROGRAM_START,
             entry_pc,
             functions,
             syscall_names: BTreeMap::new(),
         }
     }
 
-    pub fn text_bytes(&self) -> &[u8] {
-        &self.ro[self.text.clone()]
-    }
-
-    /// Virtual address of the first instruction.
-    pub fn text_addr(&self) -> u64 {
-        self.ro_addr + self.text.start as u64
-    }
-
     pub fn verify(&self) -> Result<(), VerifierError> {
-        verify(self.text_bytes())
+        verify(&self.text, self.version)
     }
 }
 

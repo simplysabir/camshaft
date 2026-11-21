@@ -2,9 +2,10 @@ use camshaft::error::InstructionError;
 use camshaft::executable::Executable;
 use camshaft::fixture;
 use camshaft::input::{Account, Instruction};
-use camshaft::insn::{Insn, decode_at, split_slots};
+use camshaft::insn::{CallTarget, Insn, decode_at, split_slots};
 use camshaft::runtime::{Environment, Outcome, process_instruction};
 use camshaft::syscalls;
+use camshaft::version::Version;
 use clap::{Parser, Subcommand};
 use std::{fs, path::PathBuf, process::ExitCode};
 
@@ -17,12 +18,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Print raw sBPF v0 bytecode as assembly
+    /// Print raw sBPF bytecode as assembly
     Disasm {
         /// Raw bytecode file (no ELF header yet)
         path: PathBuf,
+        /// Decode as v3 instead of v0
+        #[arg(long)]
+        v3: bool,
     },
-    /// Run a v0 program (.so) and print its logs, result and account changes
+    /// Run a v0 or v3 program (.so) and print its logs, result and account changes
     Run {
         /// ELF file built by `cargo build-sbf`
         path: PathBuf,
@@ -34,8 +38,10 @@ enum Command {
 
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
-        Command::Disasm { path } => read(&path).and_then(|bytes| {
-            let listing = camshaft::disasm::disassemble(&bytes).map_err(|e| e.to_string())?;
+        Command::Disasm { path, v3 } => read(&path).and_then(|bytes| {
+            let version = if v3 { Version::V3 } else { Version::V0 };
+            let listing =
+                camshaft::disasm::disassemble(&bytes, version).map_err(|e| e.to_string())?;
             print!("{listing}");
             Ok(())
         }),
@@ -119,8 +125,10 @@ fn unknown_syscall<'e>(exe: &'e Executable, outcome: &Outcome) -> Option<&'e str
     if outcome.result != Err(InstructionError::ProgramFailedToComplete) {
         return None;
     }
-    let slots = split_slots(exe.text_bytes()).ok()?;
-    let Insn::Call { imm } = decode_at(slots, outcome.pc).ok()? else {
+    let slots = split_slots(&exe.text).ok()?;
+    let Insn::Call(CallTarget::Key(imm) | CallTarget::Syscall(imm)) =
+        decode_at(slots, outcome.pc, exe.version).ok()?
+    else {
         return None;
     };
     let key = imm as u32;

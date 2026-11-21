@@ -1,6 +1,6 @@
 //! Checks our disassembler output against `solana-sbpf`.
 
-use camshaft::{disasm, insn::decode_program};
+use camshaft::{disasm, insn::decode_program, version::Version};
 use solana_sbpf::{
     disassembler::disassemble_instruction,
     ebpf,
@@ -47,26 +47,30 @@ fn every_opcode_formats_like_the_reference() {
                         bytes.extend(slot(0xff, 0xff, -1, imm.rotate_left(7)));
                     }
 
-                    let [(0, ours)] = decode_program(&bytes).unwrap()[..] else {
-                        panic!("{bytes:02x?} did not decode to one instruction");
-                    };
-                    let ours = disasm::format_insn(&ours, PC, label_of);
-
                     let mut reference = ebpf::get_insn_unchecked(&bytes, 0);
                     if opc == ebpf::LD_DW_IMM {
                         ebpf::augment_lddw_unchecked(&bytes, &mut reference);
                     }
                     reference.ptr = PC;
-                    let expected = disassemble_instruction(
-                        &reference,
-                        PC,
-                        &cfg_nodes,
-                        &registry,
-                        &loader,
-                        SBPFVersion::V0,
-                    );
 
-                    assert_eq!(ours, expected, "bytes {bytes:02x?}");
+                    for (version, sbpf_version) in [
+                        (Version::V0, SBPFVersion::V0),
+                        (Version::V3, SBPFVersion::V3),
+                    ] {
+                        let [(0, ours)] = decode_program(&bytes, version).unwrap()[..] else {
+                            panic!("{bytes:02x?} did not decode to one instruction");
+                        };
+                        let ours = disasm::format_insn(&ours, PC, label_of);
+                        let expected = disassemble_instruction(
+                            &reference,
+                            PC,
+                            &cfg_nodes,
+                            &registry,
+                            &loader,
+                            sbpf_version,
+                        );
+                        assert_eq!(ours, expected, "{version:?} bytes {bytes:02x?}");
+                    }
                 }
             }
         }
@@ -90,7 +94,7 @@ fn reference_listing(program: &[u8]) -> String {
 
 fn assert_listing_matches(program: &[u8]) {
     assert_eq!(
-        disasm::disassemble(program).unwrap(),
+        disasm::disassemble(program, Version::V0).unwrap(),
         reference_listing(program)
     );
 }

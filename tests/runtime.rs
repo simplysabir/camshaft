@@ -1,5 +1,6 @@
 //! Runs real programs on camshaft's runtime and on Agave's (through mollusk), and checks they
 //! agree on the result, every log line, compute units, final accounts and return data.
+//! Our own programs run twice: built as v0 (`counter.so`) and as v3 (`counter_v3.so`).
 
 use camshaft::executable::Executable;
 use camshaft::fixture::{self, Parsed};
@@ -151,11 +152,18 @@ fn fixture(name: &str) -> Parsed {
     fixture::parse(&fs::read_to_string(format!("tests/programs/{name}.json")).unwrap()).unwrap()
 }
 
+/// The v0 and v3 builds of one of our programs.
+fn builds(name: &str) -> [String; 2] {
+    [name.to_string(), format!("{name}_v3")]
+}
+
 #[test]
 fn counter_adds_to_its_account() {
-    let ours = compare("counter", &fixture("counter"));
-    assert_eq!(ours.result, Ok(()));
-    assert_eq!(ours.accounts[0].1.data, 7u64.to_le_bytes());
+    for program in builds("counter") {
+        let ours = compare(&program, &fixture("counter"));
+        assert_eq!(ours.result, Ok(()));
+        assert_eq!(ours.accounts[0].1.data, 7u64.to_le_bytes());
+    }
 }
 
 #[test]
@@ -167,8 +175,10 @@ fn counter_errors() {
     bad_data.instruction.data = vec![1, 2, 3];
     let mut overflow = fixture("counter");
     overflow.accounts[0].1.data = u64::MAX.to_le_bytes().to_vec();
-    for parsed in [not_owned, bad_data, overflow] {
-        assert!(compare("counter", &parsed).result.is_err());
+    for program in builds("counter") {
+        for parsed in [&not_owned, &bad_data, &overflow] {
+            assert!(compare(&program, parsed).result.is_err());
+        }
     }
 }
 
@@ -189,19 +199,23 @@ fn spl_memo_from_mainnet() {
 /// Scenario 0 uses every syscall, 11 logs r2, and the others each fail in a different way.
 #[test]
 fn tour_of_every_syscall_and_failure() {
-    for scenario in 0..=13u8 {
-        let mut parsed = fixture("tour");
-        parsed.instruction.data = vec![scenario];
-        if scenario == 12 {
-            parsed.instruction.accounts[1].is_writable = true;
-            parsed.accounts[1].1.owner = [5; 32];
+    for program in builds("tour") {
+        for scenario in 0..=13u8 {
+            let mut parsed = fixture("tour");
+            parsed.instruction.data = vec![scenario];
+            if scenario == 12 {
+                parsed.instruction.accounts[1].is_writable = true;
+                parsed.accounts[1].1.owner = [5; 32];
+            }
+            compare(&program, &parsed);
         }
-        compare("tour", &parsed);
     }
 }
 
 #[test]
 fn hello_with_no_accounts() {
     let parsed = fixture::parse(r#"{ "program_id": "11111111111111111111111111111111" }"#).unwrap();
-    compare("hello", &parsed);
+    for program in builds("hello") {
+        compare(&program, &parsed);
+    }
 }

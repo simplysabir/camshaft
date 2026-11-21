@@ -5,6 +5,7 @@ mod common;
 use camshaft::error::VmError;
 use camshaft::executable::Executable;
 use camshaft::interp::Vm;
+use camshaft::version::Version;
 use common::{asm, check, check_with_input};
 
 const LIMIT: u64 = 1000;
@@ -121,7 +122,7 @@ fn control_flow_matches_reference() {
         Err(VmError::ExecutionOverrun)
     );
     // A negative target overflows the reference's pc check in debug builds, so check ours alone.
-    let back = Executable::from_text(&asm("ja -2\nexit"), Default::default());
+    let back = Executable::from_text(&asm("ja -2\nexit"), Default::default(), Version::V0);
     assert_eq!(Vm::new(&back).run(LIMIT), Err(VmError::ExecutionOverrun));
     assert_eq!(
         check(&asm("ja -1"), LIMIT),
@@ -211,7 +212,7 @@ fn violation_errors_name_the_place() {
         check(&asm("ldxb r0, [r10+0]\nexit"), LIMIT),
         Err(VmError::StackAccessViolation(Load, STACK + 4096, 1, 1))
     );
-    let store_program = Executable::from_text(&store_program, Default::default());
+    let store_program = Executable::from_text(&store_program, Default::default(), Version::V0);
     let mut vm = Vm::new(&store_program);
     vm.run(LIMIT).unwrap_err();
     assert_eq!(vm.pc, 2, "pc points at the faulting store");

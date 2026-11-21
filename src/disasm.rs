@@ -1,14 +1,16 @@
 //! Prints instructions as text, matching the reference `disassembler.rs`.
 
 use crate::insn::{
-    self, AluOp, ByteOrder, DecodeError, Insn, JmpCond, Size, Source, Width, decode_program,
+    self, AluOp, ByteOrder, CallTarget, DecodeError, Insn, JmpCond, Size, Source, Width,
+    decode_program,
 };
+use crate::version::Version;
 use std::collections::BTreeMap;
 
-/// Disassembles raw v0 bytecode. Labels can differ from the reference; see docs/00-instructions.md.
-pub fn disassemble(program: &[u8]) -> Result<String, DecodeError> {
-    let insns = decode_program(program)?;
-    // pc 0 plus every jump target that lands on an instruction.
+/// Disassembles raw bytecode. Labels can differ from the reference; see docs/00-instructions.md.
+pub fn disassemble(program: &[u8], version: Version) -> Result<String, DecodeError> {
+    let insns = decode_program(program, version)?;
+    // pc 0 plus every jump or call target that lands on an instruction.
     let labels: BTreeMap<usize, String> = insns
         .iter()
         .filter_map(|(pc, insn)| target_of(insn, *pc))
@@ -28,13 +30,11 @@ pub fn disassemble(program: &[u8]) -> Result<String, DecodeError> {
     Ok(out)
 }
 
-/// Formats one instruction. `label_of` names jump targets; `None` prints `[invalid]`.
+/// Formats one instruction. `label_of` names jump and call targets; a jump to an unnamed
+/// target prints `[invalid]`.
 pub fn format_insn(insn: &Insn, pc: usize, label_of: impl Fn(usize) -> Option<String>) -> String {
-    let target = || {
-        target_of(insn, pc)
-            .and_then(&label_of)
-            .unwrap_or_else(|| "[invalid]".into())
-    };
+    let label = || target_of(insn, pc).and_then(&label_of);
+    let target = || label().unwrap_or_else(|| "[invalid]".into());
     match *insn {
         Insn::Lddw { dst, imm } => format!("lddw r{dst}, {imm:#x}"),
         Insn::Load {
@@ -89,28 +89,41 @@ pub fn format_insn(insn: &Insn, pc: usize, label_of: impl Fn(usize) -> Option<St
         } => format!("be{bits} r{dst}"),
         Insn::Ja { .. } => format!("ja {}", target()),
         Insn::Jump {
-            cond, dst, source, ..
+            width,
+            cond,
+            dst,
+            source,
+            ..
         } => {
+            // 64-bit jumps have no suffix.
+            let suffix = if width == Width::W32 { "32" } else { "" };
             format!(
-                "{} r{dst}, {}, {}",
+                "{}{suffix} r{dst}, {}, {}",
                 jmp_name(cond),
                 operand(source),
                 target()
             )
         }
-        Insn::Call { imm } => format!("syscall {imm}"),
-        // The reference prints imm cut to one byte.
-        Insn::Callx { imm } => format!("callx r{}", imm as u8),
+        Insn::Call(CallTarget::Key(imm) | CallTarget::Syscall(imm)) => format!("syscall {imm}"),
+        Insn::Call(CallTarget::Relative(imm) | CallTarget::Invalid(imm)) => {
+            format!("call {}", label().unwrap_or_else(|| imm.to_string()))
+        }
+        // The reference prints the register number cut to one byte.
+        Insn::Callx { reg } => format!("callx r{}", reg as u8),
         Insn::Exit => "exit".into(),
         Insn::Unknown { opc } => format!("unknown opcode={opc:#x}"),
     }
 }
 
+/// Where a jump, or a v3 relative call, goes.
 fn target_of(insn: &Insn, pc: usize) -> Option<usize> {
-    let (Insn::Ja { off } | Insn::Jump { off, .. }) = *insn else {
-        return None;
-    };
-    Some(insn::jump_target(pc, off))
+    match *insn {
+        Insn::Ja { off } | Insn::Jump { off, .. } => Some(insn::jump_target(pc, off)),
+        Insn::Call(CallTarget::Relative(off)) => {
+            usize::try_from(pc as i64 + 1 + i64::from(off)).ok()
+        }
+        _ => None,
+    }
 }
 
 fn block_label(pc: usize) -> String {
@@ -167,7 +180,6 @@ fn alu_name(op: AluOp) -> &'static str {
     }
 }
 
-/// v0 jumps are all 64-bit, so there is no suffix.
 fn jmp_name(cond: JmpCond) -> &'static str {
     match cond {
         JmpCond::Eq => "jeq",
@@ -189,7 +201,7 @@ mod tests {
     use super::*;
 
     fn one(bytes: [u8; 8]) -> String {
-        disassemble(&bytes)
+        disassemble(&bytes, Version::V0)
             .unwrap()
             .lines()
             .nth(1)
@@ -241,11 +253,31 @@ lbb_3:
     jlt r1, 7, [invalid]
     ja entrypoint
 ";
-        assert_eq!(disassemble(&program).unwrap(), expected);
+        assert_eq!(disassemble(&program, Version::V0).unwrap(), expected);
+    }
+
+    #[test]
+    fn v3_listing_labels_call_targets() {
+        #[rustfmt::skip]
+        let program = [
+            0x85, 0x10, 0, 0, 1, 0, 0, 0, // 0: call +1 (src 1) -> 2
+            0x16, 0x01, 0, 0, 5, 0, 0, 0, // 1: jeq32 r1, 5, +0 -> 2
+            0x8d, 0x03, 0, 0, 0, 0, 0, 0, // 2: callx r3, from dst
+            0x95, 0, 0, 0, 0, 0, 0, 0,    // 3: exit
+        ];
+        let expected = "\
+entrypoint:
+    call lbb_2
+    jeq32 r1, 5, lbb_2
+lbb_2:
+    callx r3
+    exit
+";
+        assert_eq!(disassemble(&program, Version::V3).unwrap(), expected);
     }
 
     #[test]
     fn empty_program_is_empty_listing() {
-        assert_eq!(disassemble(&[]).unwrap(), "");
+        assert_eq!(disassemble(&[], Version::V0).unwrap(), "");
     }
 }

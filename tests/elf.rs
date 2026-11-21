@@ -1,9 +1,12 @@
-//! Loads the v0 test ELFs with both camshaft and `solana-sbpf` and checks they agree.
+//! Loads the v0 and v3 test ELFs with both camshaft and `solana-sbpf` and checks they agree.
 
 mod common;
 
+use camshaft::elf::ElfError;
 use camshaft::executable::Executable as Ours;
-use common::{Reference, loader, run_both, verify_both};
+use camshaft::insn::{CallTarget, Insn, decode_program};
+use camshaft::syscalls;
+use common::{Reference, elf_loader, run_both, verify_both};
 use std::collections::BTreeMap;
 use std::fs;
 
@@ -20,9 +23,17 @@ fn fixtures() -> Vec<(String, Vec<u8>)> {
     files
 }
 
-/// Everything a load decides: read-only bytes and address, code address and bytes,
-/// entry pc, and function keys.
-type Loaded = (Vec<u8>, u64, u64, Vec<u8>, usize, BTreeMap<u32, usize>);
+/// Everything a load decides: version, read-only bytes and address, code address and bytes,
+/// entry pc, and function keys. The version is compared by name.
+type Loaded = (
+    String,
+    Vec<u8>,
+    u64,
+    u64,
+    Vec<u8>,
+    usize,
+    BTreeMap<u32, usize>,
+);
 
 fn loaded_reference(e: &Reference) -> Loaded {
     let (text_addr, text) = e.get_text_bytes();
@@ -33,6 +44,7 @@ fn loaded_reference(e: &Reference) -> Loaded {
         .collect();
     let ro_addr = e.get_ro_region().vm_addr_range().start;
     (
+        format!("{:?}", e.get_sbpf_version()),
         e.get_ro_section().to_vec(),
         ro_addr,
         text_addr,
@@ -44,10 +56,11 @@ fn loaded_reference(e: &Reference) -> Loaded {
 
 fn loaded_ours(e: &Ours) -> Loaded {
     (
+        format!("{:?}", e.version),
         e.ro.clone(),
         e.ro_addr,
-        e.text_addr(),
-        e.text_bytes().to_vec(),
+        e.text_addr,
+        e.text.clone(),
         e.entry_pc,
         e.functions.clone(),
     )
@@ -55,7 +68,19 @@ fn loaded_ours(e: &Ours) -> Loaded {
 
 /// Loads `bytes` both ways and asserts the same outcome. Returns both on success.
 fn load_both(bytes: &[u8], what: &str) -> Option<(Reference, Ours)> {
-    match (Reference::load(bytes, loader()), Ours::from_elf(bytes)) {
+    // e_flags 1 and 2 are v1 and v2, which the reference loads and camshaft does not.
+    let e_flags = bytes
+        .get(48..52)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+    if let Some(1 | 2) = e_flags {
+        assert_eq!(
+            Ours::from_elf(bytes).err(),
+            Some(ElfError::UnsupportedSBPFVersion),
+            "{what}"
+        );
+        return None;
+    }
+    match (Reference::load(bytes, elf_loader()), Ours::from_elf(bytes)) {
         (Ok(reference), Ok(ours)) => {
             assert!(
                 loaded_reference(&reference) == loaded_ours(&ours),
@@ -78,16 +103,31 @@ fn load_both(bytes: &[u8], what: &str) -> Option<(Reference, Ours)> {
 #[test]
 fn fixtures_load_and_run_like_the_reference() {
     let input: Vec<u8> = (1..=64).collect();
+    let mut ran = Vec::new();
     for (name, bytes) in fixtures() {
         // The reference VM has none of Agave's syscalls, so programs that call them are only
-        // compared on loading. tests/syscalls.rs runs those.
+        // compared on loading. tests/runtime.rs runs those against Agave.
         if let Some((reference, ours)) = load_both(&bytes, &name)
             && verify_both(&reference, &ours)
-            && ours.syscall_names.is_empty()
+            && !calls_a_syscall(&ours)
         {
             run_both(&reference, &ours, &input, 10_000_000).ok();
+            ran.push(name);
         }
     }
+    // Every ELF from Anza's repo that loads, v0 and v3.
+    assert_eq!(ran.len(), 25, "ran {ran:#?}");
+}
+
+/// Whether the code calls one of camshaft's syscalls.
+fn calls_a_syscall(exe: &Ours) -> bool {
+    let insns = decode_program(&exe.text, exe.version).unwrap();
+    insns.iter().any(|(_, insn)| match *insn {
+        Insn::Call(CallTarget::Key(key) | CallTarget::Syscall(key)) => {
+            syscalls::lookup(key as u32).is_some()
+        }
+        _ => false,
+    })
 }
 
 #[test]
@@ -102,9 +142,11 @@ fn writable_sections_are_rejected() {
 #[test]
 fn relative_call_runs() {
     // entrypoint(x) = function_sum(function_stack_ref(x) , x) = (x + 1) + x
-    let bytes = fs::read(format!("{FIXTURES}/relative_call_sbpfv0.so")).unwrap();
-    let (reference, ours) = load_both(&bytes, "relative_call").unwrap();
-    assert_eq!(run_both(&reference, &ours, &[5], 1000), Ok(11));
+    for version in ["v0", "v3"] {
+        let bytes = fs::read(format!("{FIXTURES}/relative_call_sbpf{version}.so")).unwrap();
+        let (reference, ours) = load_both(&bytes, version).unwrap();
+        assert_eq!(run_both(&reference, &ours, &[5], 1000), Ok(11), "{version}");
+    }
 }
 
 /// Corrupts every byte of a few small fixtures, and truncates them at every length.
@@ -112,11 +154,13 @@ fn relative_call_runs() {
 #[test]
 fn damaged_files_load_like_the_reference() {
     for name in [
-        "relative_call",
-        "reloc_64_relative_data",
-        "struct_func_pointer",
+        "relative_call_sbpfv0",
+        "reloc_64_relative_data_sbpfv0",
+        "struct_func_pointer_sbpfv0",
+        "relative_call_sbpfv3",
+        "strict_header_sbpfv3",
     ] {
-        let original = fs::read(format!("{FIXTURES}/{name}_sbpfv0.so")).unwrap();
+        let original = fs::read(format!("{FIXTURES}/{name}.so")).unwrap();
         for len in 0..original.len() {
             load_both(&original[..len], &format!("{name} truncated to {len}"));
         }

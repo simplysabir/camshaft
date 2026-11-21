@@ -19,15 +19,15 @@ verifiers agree on whether the program is valid.
 
 | source | test | how many |
 |---|---|---|
-| hand-written programs from milestones 1 to 4 | `tests/interp.rs`, `calls.rs` | thousands of cases |
-| Anza's own test ELFs (v0) | `tests/elf.rs` | 15 |
-| every assembly program in Anza's `tests/execution.rs` | `tests/reference.rs` | 186 (184 run, 2 are v3 only and both verifiers reject them) |
+| hand-written programs from milestones 1 to 4, each run as v0 and as v3 | `tests/interp.rs`, `calls.rs` | thousands of cases |
+| Anza's own test ELFs (15 v0, 13 v3) | `tests/elf.rs` | 28 (25 load and run, 3 are meant to fail) |
+| every assembly program in Anza's `tests/execution.rs`, assembled as v0 and as v3 | `tests/reference.rs` | 186 each (184 run, 2 use v2 instructions and both verifiers reject them) |
 | random programs | `tests/fuzz.rs` | 256 per `cargo test`, as many as you like with a time limit |
-| real programs with syscalls and accounts | `tests/runtime.rs`, against Agave (see [06](06-input-and-compute.md)) | 22 runs |
+| real programs with syscalls and accounts | `tests/runtime.rs`, against Agave (see [06](06-input-and-compute.md)) | 41 runs |
 
 ## Random programs
 
-`tests/fuzz.rs` builds programs the v0 verifier accepts, using `proptest`:
+`tests/fuzz.rs` builds v0 and v3 programs the verifier accepts, using `proptest`:
 
 - a start that puts interesting values in r0 and r2 to r9: addresses near the edges of
   each memory region, 0, `u64::MAX`, and random numbers

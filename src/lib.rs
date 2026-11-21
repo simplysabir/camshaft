@@ -13,3 +13,4 @@ pub mod memory;
 pub mod runtime;
 pub mod syscalls;
 pub mod verifier;
+pub mod version;

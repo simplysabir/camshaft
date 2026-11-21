@@ -3,9 +3,11 @@
 use crate::insn::{
     AluOp, DecodeError, Insn, RawInsn, Source, Width, decode_at, jump_target, split_slots,
 };
+use crate::version::Version;
 use thiserror::Error;
 
-/// Names and fields match the reference `VerifierError`. Only the v0 ones are here.
+/// Names and fields match the reference `VerifierError`. Only the ones camshaft can produce
+/// are here.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum VerifierError {
     #[error("program length must be a multiple of 8 bytes")]
@@ -47,15 +49,16 @@ impl From<DecodeError> for VerifierError {
     }
 }
 
-/// Checks a v0 program. Does not check that it ever exits.
-pub fn verify(program: &[u8]) -> Result<(), VerifierError> {
+/// Checks a program. Does not check that it ever exits, or that v3 syscalls exist: a call to
+/// an unknown one fails when it runs, as in Agave.
+pub fn verify(program: &[u8], version: Version) -> Result<(), VerifierError> {
     let slots = split_slots(program)?;
     if slots.is_empty() {
         return Err(VerifierError::NoProgram);
     }
     let mut pc = 0;
     while pc < slots.len() {
-        let insn = decode_at(slots, pc)?;
+        let insn = decode_at(slots, pc, version)?;
         check_insn(slots, pc, insn)?;
         let last_slot = pc + insn.slots() - 1;
         // The reference reports register errors at the instruction's last slot.
@@ -102,8 +105,8 @@ fn check_insn(slots: &[[u8; 8]], pc: usize, insn: Insn) -> Result<(), VerifierEr
                 Some(_) => Ok(()),
             }
         }
-        // In v0 the register number is in imm. r10 is not allowed.
-        Insn::Callx { imm } if !(0..10).contains(&imm) => Err(InvalidRegister(pc)),
+        // r10 is not allowed.
+        Insn::Callx { reg } if !(0..10).contains(&reg) => Err(InvalidRegister(pc)),
         _ => Ok(()),
     }
 }
@@ -128,7 +131,7 @@ mod tests {
     const EXIT: [u8; 8] = [0x95, 0, 0, 0, 0, 0, 0, 0];
 
     fn verify_slots(slots: &[[u8; 8]]) -> Result<(), VerifierError> {
-        verify(slots.as_flattened())
+        verify(slots.as_flattened(), Version::V0)
     }
 
     #[test]
@@ -144,8 +147,11 @@ mod tests {
 
     #[test]
     fn rejects_bad_shapes() {
-        assert_eq!(verify(&[]), Err(NoProgram));
-        assert_eq!(verify(&[0x95; 9]), Err(ProgramLengthNotMultiple));
+        assert_eq!(verify(&[], Version::V0), Err(NoProgram));
+        assert_eq!(
+            verify(&[0x95; 9], Version::V0),
+            Err(ProgramLengthNotMultiple)
+        );
         assert_eq!(
             verify_slots(&[[0x18, 0, 0, 0, 0, 0, 0, 0]]),
             Err(LDDWCannotBeLast)

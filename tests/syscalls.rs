@@ -5,6 +5,7 @@ use camshaft::error::{AccessType, SyscallError, VmError};
 use camshaft::executable::{Executable, hash_symbol_name};
 use camshaft::interp::Vm;
 use camshaft::memory::{HEAP_START, PROGRAM_START, STACK_START};
+use camshaft::version::Version;
 use std::process::Command;
 
 type Slot = [u8; 8];
@@ -43,9 +44,11 @@ fn with_data(data: &[u8], code: impl Fn(u64) -> Vec<Slot>) -> Executable {
     let mut ro = text.clone();
     ro.extend(data);
     Executable {
+        version: Version::V0,
         ro,
         ro_addr: PROGRAM_START,
-        text: 0..text.len(),
+        text,
+        text_addr: PROGRAM_START,
         entry_pc: 0,
         functions: Default::default(),
         syscall_names: Default::default(),
