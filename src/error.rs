@@ -21,6 +21,10 @@ pub enum VmError {
     InvalidInstruction,
     #[error("unsupported instruction")]
     UnsupportedInstruction,
+    #[error("call depth limit reached")]
+    CallDepthExceeded,
+    #[error("call target is outside the code")]
+    CallOutsideTextSegment,
     #[error("access violation: {0:?} of {2} bytes at {1:#x} in {3}")]
     AccessViolation(AccessType, u64, u64, &'static str),
     #[error("stack access violation: {0:?} of {2} bytes at {1:#x} in frame {3}")]

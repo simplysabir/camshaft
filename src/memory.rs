@@ -23,8 +23,10 @@ enum Region {
 }
 
 pub struct Memory<'a> {
-    /// Read-only.
+    /// Read-only: the executable's code and read-only data.
     pub program: &'a [u8],
+    /// Where `program` starts. At or after `PROGRAM_START`.
+    pub program_addr: u64,
     /// One frame per call level. In virtual addresses each frame is followed by an unmapped gap.
     pub stack: Vec<u8>,
     pub heap: Vec<u8>,
@@ -32,9 +34,10 @@ pub struct Memory<'a> {
 }
 
 impl<'a> Memory<'a> {
-    pub fn new(program: &'a [u8]) -> Self {
+    pub fn new(program: &'a [u8], program_addr: u64) -> Self {
         Self {
             program,
+            program_addr,
             stack: vec![0; (STACK_FRAME_SIZE * MAX_CALL_DEPTH) as usize],
             heap: vec![0; HEAP_SIZE],
             input: Vec::new(),
@@ -67,7 +70,7 @@ impl<'a> Memory<'a> {
 
     /// Finds the region and byte range for an access, or `None` if any byte is unmapped.
     fn locate(&self, addr: u64, len: usize) -> Option<(Region, Range<usize>)> {
-        let (region, mut offset) = region_at(addr)?;
+        let (region, mut offset) = self.offset_in(addr)?;
         if region == Region::Stack {
             // Only the start address is checked against the gaps, as in the reference.
             if (offset / STACK_FRAME_SIZE) % 2 == 1 {
@@ -86,7 +89,7 @@ impl<'a> Memory<'a> {
         if (-1..=MAX_CALL_DEPTH as i64).contains(&frame) {
             return VmError::StackAccessViolation(access, addr, len, frame);
         }
-        let name = match region_at(addr) {
+        let name = match self.offset_in(addr) {
             Some((region, offset)) if offset < self.virtual_len(region) => match region {
                 Region::Program => "program",
                 Region::Stack => "stack",
@@ -96,6 +99,18 @@ impl<'a> Memory<'a> {
             _ => "unallocated",
         };
         VmError::AccessViolation(access, addr, len, name)
+    }
+
+    /// The region an address falls in and its offset from the region's start.
+    fn offset_in(&self, addr: u64) -> Option<(Region, u64)> {
+        let region = region_at(addr)?;
+        let start = match region {
+            Region::Program => self.program_addr,
+            Region::Stack => STACK_START,
+            Region::Heap => HEAP_START,
+            Region::Input => INPUT_START,
+        };
+        Some((region, addr.checked_sub(start)?))
     }
 
     fn bytes(&self, region: Region) -> &[u8] {
@@ -128,8 +143,8 @@ impl<'a> Memory<'a> {
     }
 }
 
-/// The top 32 bits pick the region, the low 32 bits are the offset.
-fn region_at(addr: u64) -> Option<(Region, u64)> {
+/// The top 32 bits pick the region.
+fn region_at(addr: u64) -> Option<Region> {
     let region = match addr & !0xffff_ffff {
         PROGRAM_START => Region::Program,
         STACK_START => Region::Stack,
@@ -137,7 +152,7 @@ fn region_at(addr: u64) -> Option<(Region, u64)> {
         INPUT_START => Region::Input,
         _ => return None,
     };
-    Some((region, addr & 0xffff_ffff))
+    Some(region)
 }
 
 #[cfg(test)]
@@ -147,7 +162,7 @@ mod tests {
 
     #[test]
     fn stack_frames_have_gaps() {
-        let mut memory = Memory::new(&[]);
+        let mut memory = Memory::new(&[], PROGRAM_START);
         memory.store(STACK_START + 8, DW, 0x1122).unwrap();
         // Frame 1 starts at 2 * 4096 in virtual space, right after frame 0's host bytes.
         memory
@@ -168,7 +183,7 @@ mod tests {
 
     #[test]
     fn program_is_read_only() {
-        let mut memory = Memory::new(&[1, 2, 3, 4]);
+        let mut memory = Memory::new(&[1, 2, 3, 4], PROGRAM_START);
         assert_eq!(memory.load(PROGRAM_START + 1, H), Ok(0x0302));
         assert_eq!(
             memory.store(PROGRAM_START, B, 0),
@@ -192,7 +207,7 @@ mod tests {
 
     #[test]
     fn unmapped_addresses_are_unallocated() {
-        let memory = Memory::new(&[]);
+        let memory = Memory::new(&[], PROGRAM_START);
         for addr in [0, 8, INPUT_START, 0x5_0000_0000, u64::MAX] {
             assert_eq!(
                 memory.load(addr, B),

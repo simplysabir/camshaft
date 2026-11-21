@@ -1,100 +1,13 @@
 //! Runs programs on both camshaft and `solana-sbpf` and checks they end in the same state.
 
+mod common;
+
 use camshaft::error::VmError;
+use camshaft::executable::Executable;
 use camshaft::interp::Vm;
-use camshaft::memory::HEAP_SIZE;
-use solana_sbpf::{
-    aligned_memory::AlignedMemory,
-    assembler::assemble,
-    ebpf::{HOST_ALIGN, MM_INPUT_START},
-    elf::Executable,
-    interpreter::Interpreter,
-    memory_region::MemoryRegion,
-    program::{BuiltinProgram, FunctionRegistry, SBPFVersion},
-    test_utils::{TestContextObject, create_memory_mapping},
-    vm::{CallFrame, Config, ContextObject, EbpfVm},
-};
-use std::sync::Arc;
+use common::{asm, check, check_with_input};
 
 const LIMIT: u64 = 1000;
-
-fn loader() -> Arc<BuiltinProgram<TestContextObject>> {
-    let config = Config {
-        enabled_sbpf_versions: SBPFVersion::V0..=SBPFVersion::V0,
-        ..Config::default()
-    };
-    Arc::new(BuiltinProgram::new_loader(config))
-}
-
-fn asm(src: &str) -> Vec<u8> {
-    let executable = assemble::<TestContextObject>(src, loader()).unwrap();
-    executable.get_text_bytes().1.to_vec()
-}
-
-/// Runs `program` on both VMs, asserts they agree, and returns camshaft's result.
-fn check(program: &[u8], limit: u64) -> Result<u64, VmError> {
-    check_with_input(program, &[], limit)
-}
-
-/// Same as `check`, with `input` mapped writable at the input region.
-fn check_with_input(program: &[u8], input: &[u8], limit: u64) -> Result<u64, VmError> {
-    let executable = Executable::from_text_bytes(
-        program,
-        loader(),
-        SBPFVersion::V0,
-        FunctionRegistry::default(),
-    )
-    .unwrap();
-    let mut stack = AlignedMemory::<HOST_ALIGN>::zero_filled(executable.get_config().stack_size());
-    let mut heap = AlignedMemory::<HOST_ALIGN>::zero_filled(HEAP_SIZE);
-    let mut expected_input = input.to_vec();
-    let input_region = MemoryRegion::new(&raw mut *expected_input.as_mut_slice(), MM_INPUT_START);
-    let mut context = TestContextObject::new(limit);
-    context.memory_mapping =
-        create_memory_mapping(&executable, &mut stack, &mut heap, vec![input_region], None)
-            .unwrap();
-    let mut vm = EbpfVm::new(
-        executable.get_loader().clone(),
-        SBPFVersion::V0,
-        &mut context,
-        stack.len(),
-    );
-    vm.registers[1] = MM_INPUT_START;
-    vm.previous_instruction_meter = limit;
-    let mut frames = vec![CallFrame::default(); executable.get_config().max_call_depth];
-    let registers = vm.registers;
-    let mut interpreter = Interpreter::new(&mut vm, &executable, registers, &mut frames);
-    while interpreter.step() {}
-    let expected_reg = interpreter.reg;
-    // Memory errors move the pending count into the context, so add both.
-    let expected_count = limit - vm.context().get_remaining() + vm.due_insn_count;
-
-    let mut ours = Vm::new(program);
-    ours.memory.input = input.to_vec();
-    let result = ours.run(limit);
-    let context = format!("program {program:02x?}");
-    assert_eq!(
-        format!("{result:?}"),
-        format!("{:?}", vm.program_result),
-        "{context}"
-    );
-    assert_eq!(ours.reg, expected_reg[..11], "{context}");
-    assert_eq!(ours.pc as u64, expected_reg[11], "{context}");
-    assert_eq!(ours.insn_count, expected_count, "{context}");
-    assert!(
-        ours.memory.stack == stack.as_slice(),
-        "stack differs: {context}"
-    );
-    assert!(
-        ours.memory.heap == heap.as_slice(),
-        "heap differs: {context}"
-    );
-    assert!(
-        ours.memory.input == expected_input,
-        "input differs: {context}"
-    );
-    result
-}
 
 /// Edge values: zero, small, shift widths, 32-bit and 64-bit boundaries.
 const VALUES: [u64; 20] = [
@@ -208,7 +121,7 @@ fn control_flow_matches_reference() {
         Err(VmError::ExecutionOverrun)
     );
     // A negative target overflows the reference's pc check in debug builds, so check ours alone.
-    let back = asm("ja -2\nexit");
+    let back = Executable::from_text(&asm("ja -2\nexit"), Default::default());
     assert_eq!(Vm::new(&back).run(LIMIT), Err(VmError::ExecutionOverrun));
     assert_eq!(
         check(&asm("ja -1"), LIMIT),
@@ -298,6 +211,7 @@ fn violation_errors_name_the_place() {
         check(&asm("ldxb r0, [r10+0]\nexit"), LIMIT),
         Err(VmError::StackAccessViolation(Load, STACK + 4096, 1, 1))
     );
+    let store_program = Executable::from_text(&store_program, Default::default());
     let mut vm = Vm::new(&store_program);
     vm.run(LIMIT).unwrap_err();
     assert_eq!(vm.pc, 2, "pc points at the faulting store");

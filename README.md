@@ -9,7 +9,8 @@ that `cargo build-sbf` produces, and shows what happens at each step.
 - [x] Milestone 1: run register-only programs
 - [x] Milestone 2: memory (loads, stores, access checks)
 - [x] Milestone 3: verifier
-- [ ] Milestone 4: ELF loader and function calls
+- [x] Milestone 4: ELF loader and function calls
+- [ ] Milestone 5: syscalls
 
 ## Usage
 
@@ -25,3 +26,4 @@ cargo run -- disasm program.bin
 - [01: Interpreter](docs/01-interpreter.md)
 - [02: Memory](docs/02-memory.md)
 - [03: Verifier](docs/03-verifier.md)
+- [04: ELF loading and function calls](docs/04-elf-and-calls.md)

@@ -36,8 +36,8 @@ must be a multiple of 8 (`ProgramLengthNotMultiple`).
 ## What the verifier buys the interpreter
 
 Once a program passes, the interpreter can trust it: registers are r0 to r10, jumps land on
-real instructions, and there is no division by a zero immediate. The ELF loader (milestone 4)
-will run `verify` before every program it loads.
+real instructions, and there is no division by a zero immediate. Loading does not verify by itself, just like the reference. Call
+`Executable::verify()` after loading.
 
 ## How we know it is right
 
