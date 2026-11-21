@@ -14,6 +14,7 @@ use solana_sbpf::{
     memory_region::MemoryRegion,
     program::{BuiltinProgram, FunctionRegistry, SBPFVersion},
     test_utils::{TestContextObject, create_memory_mapping},
+    verifier::{RequisiteVerifier, Verifier},
     vm::{CallFrame, Config, ContextObject, EbpfVm},
 };
 use std::sync::Arc;
@@ -38,14 +39,35 @@ pub fn asm(src: &str) -> Vec<u8> {
     assemble_reference(src).get_text_bytes().1.to_vec()
 }
 
-/// Our executable with the same code and function keys as a reference one built from text.
+/// Our executable with the same code, function keys and entry as a reference one built from
+/// text. The assembler keys functions by pc, so the entry is copied rather than looked up.
 pub fn ours_from_reference_text(reference: &Reference) -> Ours {
     let functions = reference
         .get_function_registry()
         .iter()
         .map(|(key, (_name, pc))| (key, pc))
         .collect();
-    Ours::from_text(reference.get_text_bytes().1, functions)
+    let mut ours = Ours::from_text(reference.get_text_bytes().1, functions);
+    ours.entry_pc = reference.get_entrypoint_instruction_offset();
+    ours
+}
+
+/// 1 KiB of 0, 1, ..., 255 repeated, for programs that read their input.
+pub fn input() -> Vec<u8> {
+    (0..=255).cycle().take(1024).collect()
+}
+
+/// Runs both verifiers, asserts they agree, and returns whether the program is valid.
+pub fn verify_both(reference: &Reference, ours: &Ours) -> bool {
+    let expected = RequisiteVerifier::verify(
+        reference.get_text_bytes().1,
+        SBPFVersion::V0,
+        reference.get_config(),
+        reference.get_function_registry(),
+    );
+    let verdict = ours.verify();
+    assert_eq!(format!("{verdict:?}"), format!("{expected:?}"), "verifier");
+    verdict.is_ok()
 }
 
 /// Runs raw bytecode with no functions.

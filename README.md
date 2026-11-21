@@ -12,7 +12,7 @@ that `cargo build-sbf` produces, and shows what happens at each step.
 - [x] Milestone 4: ELF loader and function calls
 - [x] Milestone 5: syscalls (logging, memory, allocation)
 - [x] Milestone 6: program input, compute units, more syscalls
-- [ ] Milestone 7: differential testing at scale
+- [x] Milestone 7: differential testing at scale
 
 ## Usage
 
@@ -34,3 +34,4 @@ cargo run -- disasm program.bin                      # print raw bytecode as ass
 - [04: ELF loading and function calls](docs/04-elf-and-calls.md)
 - [05: Syscalls](docs/05-syscalls.md)
 - [06: Program input and compute units](docs/06-input-and-compute.md)
+- [07: Differential testing](docs/07-differential-testing.md)

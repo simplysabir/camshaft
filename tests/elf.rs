@@ -3,7 +3,7 @@
 mod common;
 
 use camshaft::executable::Executable as Ours;
-use common::{Reference, loader, run_both};
+use common::{Reference, loader, run_both, verify_both};
 use std::collections::BTreeMap;
 use std::fs;
 
@@ -82,6 +82,7 @@ fn fixtures_load_and_run_like_the_reference() {
         // The reference VM has none of Agave's syscalls, so programs that call them are only
         // compared on loading. tests/syscalls.rs runs those.
         if let Some((reference, ours)) = load_both(&bytes, &name)
+            && verify_both(&reference, &ours)
             && ours.syscall_names.is_empty()
         {
             run_both(&reference, &ours, &input, 10_000_000).ok();

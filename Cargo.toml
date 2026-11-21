@@ -17,6 +17,7 @@ thiserror = "2.0.21"
 
 [dev-dependencies]
 mollusk-svm = "=0.17.1"
+proptest = "1.12.0"
 solana-account = "5.4.0"
 solana-clock = "4.0.0"
 solana-instruction = "4.0.0"
