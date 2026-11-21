@@ -1,6 +1,6 @@
 # 00: Instructions
 
-camshaft can now read sBPF bytecode and print it as assembly.
+How sBPF bytecode is laid out, and how `camshaft disasm` prints it as assembly.
 
 ## One instruction = 8 bytes
 
@@ -30,26 +30,26 @@ The lowest 3 bits say what kind of instruction it is:
 | 3 | store a register | `stxw [r1+0x0], r2` |
 | 4 | 32-bit math | `add32 r1, 5` |
 | 5 | jumps, calls, exit | `jeq r1, 5, lbb_7` |
-| 6 | unused in v0 | |
+| 6 | 32-bit jumps (v3 only, see [08](08-sbpf-v3.md)) | `jeq32 r1, 5, lbb_7` |
 | 7 | 64-bit math | `add64 r1, r2` |
 
 For math and jumps, bit 3 picks the second operand: `0` means the `imm` number, `1` means
 the `src` register. So `add64 r1, 5` is `0x07` and `add64 r1, r2` is `0x0f`.
 
-v0 has 91 valid opcodes. Anything else prints as `unknown opcode=0x..`.
+v0 has 91 valid opcodes, and v3 adds 22 more. Anything else prints as `unknown opcode=0x..`.
 
 ## Surprises
 
-- `callx` (opcode `0x8d`) reads its register number from `imm`, not from `src` or `dst`.
+- In v0, `callx` (opcode `0x8d`) reads its register number from `imm`. v3 moves it to `dst`.
 - `le` and `be` (byte swaps) read the size (16, 32 or 64) from `imm`.
 - A jump lands at `pc + offset + 1`. If that isn't the start of an instruction, it prints as `[invalid]`.
 
 ## Code
 
-- `src/insn.rs` turns bytes into an `Insn` value. `decode_at(slots, pc)` decodes one
+- `src/insn.rs` turns bytes into an `Insn` value. `decode_at(slots, pc, version)` decodes one
   instruction. `decode_program` decodes all of them.
 - `src/disasm.rs` turns an `Insn` into text.
-- Unknown opcodes are not errors here. The verifier (milestone 3) rejects them.
+- Unknown opcodes are not errors here. The verifier ([03](03-verifier.md)) rejects them.
 
 ## How we know it is right
 
@@ -58,10 +58,12 @@ values, through both camshaft and Anza's `solana-sbpf`, and checks that the text
 
 ## Known differences
 
-- `call` always prints `syscall <number>`. Names come once we load ELF files (milestone 4) and syscalls (milestone 5).
+- `disasm` prints a `call` as `syscall <number>`, like the reference does without an ELF.
+  `camshaft trace` shows syscall and function names ([09](09-trace-and-profile.md)).
 - Labels: we name jump targets `lbb_N`. Anza runs extra analysis and sometimes names
   them `function_N`, for example for unreachable code. The instructions themselves always match.
 
 ## Setup note
 
-`solana-sbpf` 0.28 needs Rust 1.95, so `rust-toolchain.toml` pins it.
+The test oracles (`solana-sbpf` 0.28 and Agave 4.4.1) need a recent Rust, so
+`rust-toolchain.toml` pins 1.98.1.

@@ -1,6 +1,6 @@
 # 06: Program input and compute units
 
-camshaft can now run a real Solana instruction: accounts go in, the program runs with a
+camshaft runs a real Solana instruction: accounts go in, the program runs with a
 compute budget, and the changed accounts come out, checked against the runtime's rules.
 
 ```

@@ -181,6 +181,15 @@ impl RawInsn {
 }
 
 impl Insn {
+    /// The key of a `call` that may name a syscall: any v0 `call`, or a v3 one with src 0.
+    /// In v0 the key may name a function instead.
+    pub fn syscall_key(&self) -> Option<u32> {
+        match *self {
+            Insn::Call(CallTarget::Key(key) | CallTarget::Syscall(key)) => Some(key as u32),
+            _ => None,
+        }
+    }
+
     /// How many slots this instruction uses.
     pub fn slots(&self) -> usize {
         if matches!(self, Insn::Lddw { .. }) {

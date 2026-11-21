@@ -36,8 +36,8 @@ pub(super) enum ParseError {
 
 pub(super) const EHDR_SIZE: usize = 64;
 pub(super) const PHDR_SIZE: usize = 56;
-const SHDR_SIZE: usize = 64;
-const SYM_SIZE: usize = 24;
+pub(super) const SHDR_SIZE: usize = 64;
+pub(super) const SYM_SIZE: usize = 24;
 const REL_SIZE: usize = 16;
 const DYN_SIZE: usize = 16;
 
@@ -75,13 +75,13 @@ pub(super) struct Header {
     pub(super) version: u32,
     pub(super) entry: u64,
     pub(super) phoff: u64,
-    shoff: u64,
+    pub(super) shoff: u64,
     pub(super) ehsize: u16,
     pub(super) phentsize: u16,
     pub(super) phnum: u16,
     shentsize: u16,
-    shnum: u16,
-    shstrndx: u16,
+    pub(super) shnum: u16,
+    pub(super) shstrndx: u16,
 }
 
 impl Header {
@@ -139,7 +139,7 @@ pub(super) struct Shdr {
 }
 
 impl Shdr {
-    fn read(b: &[u8]) -> Self {
+    pub(super) fn read(b: &[u8]) -> Self {
         Self {
             name: u32_at(b, 0),
             sh_type: u32_at(b, 4),
@@ -171,7 +171,7 @@ pub(super) struct Sym {
 }
 
 impl Sym {
-    fn read(b: &[u8]) -> Self {
+    pub(super) fn read(b: &[u8]) -> Self {
         Self {
             name: u32_at(b, 0),
             info: b[4],
@@ -240,7 +240,7 @@ fn no_overlap(a: &Range<usize>, b: &Range<usize>) -> Result<(), ParseError> {
 }
 
 /// A NUL-terminated string at `offset` inside a string table section.
-fn string_in<'a>(
+pub(super) fn string_in<'a>(
     bytes: &'a [u8],
     table: &Shdr,
     offset: u32,

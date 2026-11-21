@@ -2,8 +2,11 @@
 //! v0 (`v0.rs`) or v3 (`v3.rs`). Reference: `elf.rs` in anza-xyz/sbpf.
 
 mod parse;
+mod symbols;
 mod v0;
 mod v3;
+
+pub use symbols::FunctionNames;
 
 use crate::executable::Executable;
 use parse::{ParseError, u32_at};

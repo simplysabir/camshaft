@@ -19,7 +19,7 @@ verifiers agree on whether the program is valid.
 
 | source | test | how many |
 |---|---|---|
-| hand-written programs from milestones 1 to 4, each run as v0 and as v3 | `tests/interp.rs`, `calls.rs` | thousands of cases |
+| hand-written programs for each part of the VM, each run as v0 and as v3 | `tests/interp.rs`, `calls.rs` | thousands of cases |
 | Anza's own test ELFs (15 v0, 13 v3) | `tests/elf.rs` | 28 (25 load and run, 3 are meant to fail) |
 | every assembly program in Anza's `tests/execution.rs`, assembled as v0 and as v3 | `tests/reference.rs` | 186 each (184 run, 2 use v2 instructions and both verifiers reject them) |
 | random programs | `tests/fuzz.rs` | 256 per `cargo test`, as many as you like with a time limit |

@@ -4,7 +4,7 @@ mod common;
 
 use camshaft::elf::ElfError;
 use camshaft::executable::Executable as Ours;
-use camshaft::insn::{CallTarget, Insn, decode_program};
+use camshaft::insn::decode_program;
 use camshaft::syscalls;
 use common::{Reference, elf_loader, run_both, verify_both};
 use std::collections::BTreeMap;
@@ -122,12 +122,9 @@ fn fixtures_load_and_run_like_the_reference() {
 /// Whether the code calls one of camshaft's syscalls.
 fn calls_a_syscall(exe: &Ours) -> bool {
     let insns = decode_program(&exe.text, exe.version).unwrap();
-    insns.iter().any(|(_, insn)| match *insn {
-        Insn::Call(CallTarget::Key(key) | CallTarget::Syscall(key)) => {
-            syscalls::lookup(key as u32).is_some()
-        }
-        _ => false,
-    })
+    insns
+        .iter()
+        .any(|(_, insn)| insn.syscall_key().and_then(syscalls::lookup).is_some())
 }
 
 #[test]

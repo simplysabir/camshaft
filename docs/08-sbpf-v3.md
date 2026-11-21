@@ -1,6 +1,6 @@
 # 08: sBPF v3
 
-camshaft now runs v3 programs as well as v0. Build one with:
+camshaft runs v3 programs as well as v0. Build one with:
 
 ```
 cargo build-sbf --arch v3
@@ -23,7 +23,7 @@ v3 is three SIMDs, and stack frames without gaps:
 | `callx` (SIMD-0377) | register number in imm | register number in dst |
 | stack frames | 4 KiB frame, then a 4 KiB unmapped gap; r10 moves 8 KiB per call | frames back to back; r10 moves 4 KiB per call |
 
-The plan said v3 also has dynamic stack frames (SIMD-0166) and explicit sign extension.
+Some write-ups list dynamic stack frames (SIMD-0166) and explicit sign extension as v3.
 In Anza's VM those belong to v1 and v2 only, so camshaft follows the reference and leaves
 them out.
 
@@ -64,7 +64,7 @@ There are no relocations, so the loader just copies the two segments out.
 
 ## How we know it is right
 
-Every M7 test now runs as v3 too (see [07](07-differential-testing.md)):
+Every differential test runs as v3 too (see [07](07-differential-testing.md)):
 
 - every opcode with many field values, through both verifiers and both disassemblers
 - the hand-written programs, run as v0 and as v3

@@ -1,18 +1,20 @@
 # 05: Syscalls
 
-Programs can now call into the runtime: log messages, copy memory, allocate. camshaft runs
-a hello-world built with `cargo build-sbf`:
+Programs call into the runtime through syscalls: log messages, copy memory, allocate.
+A hello-world built with `cargo build-sbf`:
 
 ```
 $ camshaft run tests/programs/hello.so
+Program 11111111111111111111111111111111 invoke [1]
 Program log: Hello, world!
-Program returned 0 after 5 instructions
+Program 11111111111111111111111111111111 consumed 105 of 200000 compute units
+Program 11111111111111111111111111111111 success
 ```
 
 ## How a program calls a syscall
 
-There is no `syscall` instruction in v0. A program does `call imm`, where `imm` is the
-murmur3 hash of the syscall's name. `sol_log_` is always `0x207559bd`.
+There is no `syscall` instruction. A program does `call imm`, where `imm` is the
+murmur3 hash of the syscall's name (in v3, with src 0; see [08](08-sbpf-v3.md)). `sol_log_` is always `0x207559bd`.
 
 ```
 r1..r5  arguments

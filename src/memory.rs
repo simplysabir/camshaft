@@ -35,6 +35,8 @@ pub struct Memory<'a> {
     pub stack: Vec<u8>,
     pub heap: Vec<u8>,
     pub input: Vec<u8>,
+    /// When `Some`, each successful write's address and length, for the tracer.
+    pub writes: Option<Vec<(u64, usize)>>,
     stack_gaps: bool,
 }
 
@@ -46,6 +48,7 @@ impl<'a> Memory<'a> {
             stack: vec![0; (STACK_FRAME_SIZE * MAX_CALL_DEPTH) as usize],
             heap: vec![0; HEAP_SIZE],
             input: Vec::new(),
+            writes: None,
             stack_gaps: version.stack_frame_gaps(),
         }
     }
@@ -78,6 +81,9 @@ impl<'a> Memory<'a> {
     pub fn slice_mut(&mut self, addr: u64, len: usize) -> Result<&mut [u8], VmError> {
         match self.locate(addr, len) {
             Some((region, range)) if region != Region::Program => {
+                if let Some(writes) = &mut self.writes {
+                    writes.push((addr, len));
+                }
                 Ok(&mut self.bytes_mut(region)[range])
             }
             _ => Err(self.violation(AccessType::Store, addr, len)),

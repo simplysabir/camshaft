@@ -19,13 +19,10 @@ use solana_program::{
     program_memory::{sol_memcmp, sol_memcpy, sol_memmove, sol_memset},
     pubkey::Pubkey,
     rent::Rent,
+    syscalls::{sol_get_clock_sysvar, sol_sha256},
     sysvar::Sysvar,
 };
 
-extern "C" {
-    fn sol_sha256(vals: *const u8, len: u64, out: *mut u8) -> u64;
-    fn sol_get_clock_sysvar(out: *mut u8) -> u64;
-}
 
 /// `entrypoint!` without the macro, so the program can see r2: Agave sets it to the address
 /// of the instruction data.

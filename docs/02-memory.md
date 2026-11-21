@@ -1,7 +1,7 @@
 # 02: Memory
 
-Programs can now load and store. Every address goes through `src/memory.rs`, which checks
-it before touching any bytes.
+Every load and store goes through `src/memory.rs`, which checks the address before touching
+any bytes.
 
 ## The address map
 

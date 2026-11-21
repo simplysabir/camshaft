@@ -1,6 +1,6 @@
 # 01: Interpreter
 
-camshaft can now run a program, as long as it only uses registers (no memory or calls yet).
+The interpreter (`src/interp.rs`) runs a program one instruction at a time.
 
 ## The loop
 
@@ -19,7 +19,7 @@ loop:
 
 | register | start value | why |
 |---|---|---|
-| r1 | `0x4_0000_0000` | where the input will live (milestone 6) |
+| r1 | `0x4_0000_0000` | where the input lives ([06](06-input-and-compute.md)) |
 | r10 | `0x2_0000_1000` | top of the first 4 KiB stack frame |
 | others | 0 | |
 
@@ -29,7 +29,6 @@ loop:
 - **32-bit math only looks at the low 32 bits of each input.** The result then fills 64 bits:
   - `add32`, `sub32`, `mul32` copy the sign bit up (sign-extend). `0x7fffffff + 1` becomes `0xffffffff80000000`.
   - Every other 32-bit op fills the top half with zeros.
-  - The plan said all 32-bit ops zero-extend. That is wrong for v0; the reference wins.
 - **An `imm` in a 64-bit op is sign-extended first.** `div64 r1, -1` divides by `0xffffffffffffffff`.
 - **Shifts wrap the amount**: mod 32 for 32-bit, mod 64 for 64-bit. `lsh64 r1, 65` shifts by 1.
 - **Division by a zero register** is a `DivideByZero` error. `div32` only checks the low 32 bits, so `1 << 32` counts as zero.
@@ -37,10 +36,12 @@ loop:
 - **Signed jumps** (`jsgt` and friends) treat both sides as signed. All others compare unsigned.
 - **A jump lands at `pc + 1 + offset`.** Landing outside the program is not an error until we try to run from there.
 
-## Not done yet
+## Where the rest lives
 
-- Loads and stores (milestone 2), `call` and `callx` (milestone 4). They return `UnsupportedInstruction` for now.
-- No verifier yet (milestone 3). A program using r11 or higher will crash the interpreter.
+- Loads and stores: [02](02-memory.md). Calls and `callx`: [04](04-elf-and-calls.md).
+  Syscalls: [05](05-syscalls.md).
+- The verifier ([03](03-verifier.md)) runs first, so the interpreter never sees a register
+  above r10.
 
 ## How we know it is right
 

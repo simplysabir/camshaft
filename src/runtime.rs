@@ -6,7 +6,7 @@ use crate::context::{Clock, Pubkey, Rent};
 use crate::error::{InstructionError, SyscallError, VmError};
 use crate::executable::Executable;
 use crate::input::{self, Account, Instruction};
-use crate::interp::Vm;
+use crate::interp::{Observer, Vm};
 use crate::memory::INPUT_START;
 use base64::Engine;
 
@@ -53,6 +53,17 @@ pub fn process_instruction(
     accounts: &[(Pubkey, Account)],
     env: &Environment,
 ) -> Outcome {
+    process_instruction_observed(exe, ix, accounts, env, &mut ())
+}
+
+/// `process_instruction`, with `observer` watching each instruction.
+pub fn process_instruction_observed(
+    exe: &Executable,
+    ix: &Instruction,
+    accounts: &[(Pubkey, Account)],
+    env: &Environment,
+    observer: &mut impl Observer,
+) -> Outcome {
     let id = bs58::encode(ix.program_id).into_string();
     let mut vm = Vm::new(exe);
     vm.ctx.program_id = ix.program_id;
@@ -60,7 +71,7 @@ pub fn process_instruction(
     vm.ctx.rent = env.rent.clone();
     vm.ctx.logs.push(format!("Program {id} invoke [1]"));
 
-    let (result, accounts) = match run(&mut vm, ix, accounts, env.compute_units, &id) {
+    let (result, accounts) = match run(&mut vm, ix, accounts, env.compute_units, &id, observer) {
         Ok(after) => {
             vm.ctx.logs.push(format!("Program {id} success"));
             // The transaction checks the balance once the instruction is over, after the line above.
@@ -96,13 +107,14 @@ fn run(
     accounts: &[(Pubkey, Account)],
     budget: u64,
     id: &str,
+    observer: &mut impl Observer,
 ) -> Result<Vec<(Pubkey, Account)>, (InstructionError, String)> {
     let failed = |e: InstructionError| (e.clone(), e.to_string());
     vm.memory.input = input::serialize(ix, accounts).map_err(failed)?;
     // r2 points at the instruction data, which sits just before the 32-byte program id.
     let data_offset = vm.memory.input.len() - 32 - ix.data.len();
     vm.reg[2] = INPUT_START + data_offset as u64;
-    let result = vm.run(budget);
+    let result = vm.run_observed(budget, observer);
 
     let consumed = budget - vm.ctx.remaining;
     vm.ctx.logs.push(format!(

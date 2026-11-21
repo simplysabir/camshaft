@@ -10,6 +10,32 @@ use crate::insn::{
 use crate::memory::{INPUT_START, MAX_CALL_DEPTH, Memory, STACK_FRAME_SIZE, STACK_START};
 use crate::syscalls;
 
+/// Watches a run one instruction at a time. The tracer and profiler are observers.
+pub trait Observer {
+    /// Set to have `vm.memory.writes` list each instruction's writes.
+    const RECORDS_WRITES: bool = false;
+
+    /// Called after each instruction runs, including one that fails.
+    fn after(&mut self, vm: &Vm, step: &Step);
+}
+
+/// A plain run, watched by no one.
+impl Observer for () {
+    fn after(&mut self, _: &Vm, _: &Step) {}
+}
+
+/// An instruction and the state just before it ran.
+pub struct Step {
+    pub pc: usize,
+    pub insn: Insn,
+    /// r0 to r10.
+    pub reg: [u64; 11],
+    /// Calls in progress: 0 in the entrypoint.
+    pub depth: usize,
+    /// Compute units the instruction used: 1, plus a syscall's own cost.
+    pub cost: u64,
+}
+
 /// What a call saves so the matching `exit` can return to the caller.
 struct Frame {
     /// r6 to r9, which the callee may overwrite.
@@ -53,21 +79,50 @@ impl<'a> Vm<'a> {
     ///
     /// The program must pass the verifier (M3); a register above r10 panics.
     pub fn run(&mut self, budget: u64) -> Result<u64, VmError> {
+        self.run_observed(budget, &mut ())
+    }
+
+    /// `run`, calling `observer` after every instruction.
+    pub fn run_observed<O: Observer>(
+        &mut self,
+        budget: u64,
+        observer: &mut O,
+    ) -> Result<u64, VmError> {
+        self.memory.writes = O::RECORDS_WRITES.then(Vec::new);
         self.ctx.remaining = budget;
         let slots = split_slots(&self.exe.text)?;
         loop {
             if self.ctx.remaining == 0 {
                 return Err(VmError::ExceededMaxInstructions);
             }
+            let (reg, remaining, depth) = (self.reg, self.ctx.remaining, self.frames.len());
             self.ctx.remaining -= 1;
             self.insn_count += 1;
             if self.pc >= slots.len() {
                 return Err(VmError::ExecutionOverrun);
             }
-            if let Some(r0) = self.step(decode_at(slots, self.pc, self.exe.version)?)? {
+            let (pc, insn) = (self.pc, decode_at(slots, self.pc, self.exe.version)?);
+            if let Some(writes) = &mut self.memory.writes {
+                writes.clear();
+            }
+            let result = self.step(insn);
+            let step = Step {
+                pc,
+                insn,
+                reg,
+                depth,
+                cost: remaining - self.ctx.remaining,
+            };
+            observer.after(self, &step);
+            if let Some(r0) = result? {
                 return Ok(r0);
             }
         }
+    }
+
+    /// Calls in progress: 0 in the entrypoint.
+    pub fn depth(&self) -> usize {
+        self.frames.len()
     }
 
     /// Executes one instruction. Returns `Some(r0)` on `exit`.
@@ -136,9 +191,7 @@ impl<'a> Vm<'a> {
                 let addr = self.reg[dst as usize].wrapping_add_signed(off.into());
                 self.memory.store(addr, size, self.operand(value))?;
             }
-            Insn::Call(CallTarget::Key(key) | CallTarget::Syscall(key))
-                if let Some(syscall) = syscalls::lookup(key as u32) =>
-            {
+            Insn::Call(_) if let Some(syscall) = insn.syscall_key().and_then(syscalls::lookup) => {
                 self.reg[0] = syscall(self, std::array::from_fn(|i| self.reg[i + 1]))?;
             }
             Insn::Call(target) => {
